@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>PRESENCIA v2 — loops WAV + fallback MP3</title>
+<title>PRESENCIA v3 — texto generativo</title>
 <style>
   :root{--bg:#0a0a0b;--fg:#e8e8ec}
   *{box-sizing:border-box}
@@ -23,6 +23,18 @@
   .log{max-width:560px;width:100%;margin-top:12px;background:#0e0e11;border:1px solid #26262b;border-radius:12px;
     padding:10px;font-size:12px;line-height:1.35;white-space:pre-wrap}
   .ok{color:#9BEF8A}.warn{color:#FFD166}.err{color:#FF6B6B}
+
+  /* Overlay de texto poético */
+  #textOverlay{
+    position:absolute; inset:auto 12px 64px 12px;
+    text-align:center; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size:14px; line-height:1.4; letter-spacing:0.2px;
+    color:#eaeaf0; opacity:0; transform: translateY(6px);
+    transition: opacity .5s ease, transform .5s ease;
+    text-shadow: 0 1px 0 rgba(0,0,0,.25);
+    pointer-events:none; mix-blend-mode:screen;
+  }
+  #textOverlay.show{ opacity:1; transform: translateY(0); }
 </style>
 </head>
 <body>
@@ -35,251 +47,165 @@
       <div class="pill" id="state">estado: idle</div>
       <div class="pill" id="meters">browΔ: - · mouth: -</div>
     </div>
+    <div id="textOverlay"></div>
   </div>
   <div class="log" id="log"></div>
 </div>
 
-<!-- MediaPipe -->
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
 <script>
-/* PRESENCIA v2 — loops externos (WAV primera opción, MP3 fallback)
-   Capas (loops):
-     breath_drone_base, breath_air_noise, kinetic_click_loop, kinetic_foley_loop, sub_pulse_loop, texture_hiss_loop
-   One-shots (cejas): choir_grain_01..04
-   Colócalos en /assets con esos nombres y ext .wav (y opcional .mp3)
-*/
-const logEl = document.getElementById('log');
-function log(m,c=''){const d=document.createElement('div');d.className=c;d.textContent=m;logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight;}
+// ======== Log util ========
+const logEl=document.getElementById('log');
+function log(m,c=''){const d=document.createElement('div');d.className=c;d.textContent=m;
+logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight;}
 
-const video = document.getElementById('cam');
-const canvas = document.getElementById('viz');
-const ctx2d = canvas.getContext('2d');
-const ovl = document.getElementById('ovl');
-const stage = document.getElementById('stage');
-const stateEl = document.getElementById('state');
-const metersEl = document.getElementById('meters');
-const W = ()=>stage.clientWidth, H = ()=>stage.clientHeight;
-
-// ====== Audio Setup (WAV→MP3 fallback) ======
-let actx;
+// ======== Audio simple (sin samples externos para demo) ========
+let actx,gMaster,gDrone,osc,started=false;
 function ctx(){return actx||(actx=new (window.AudioContext||window.webkitAudioContext)());}
-function silentClick(){const c=ctx();const o=c.createOscillator();const g=c.createGain();g.gain.value=0.0001;o.connect(g).connect(c.destination);o.start();o.stop(c.currentTime+0.05);}
-async function unlock(){ctx();silentClick();try{await actx.resume();}catch{} log('AudioContext: '+actx.state, actx.state==='running'?'ok':'warn'); return actx.state==='running';}
-
-async function loadBufferBase(name){
-  const wav='assets/'+name+'.wav', mp3='assets/'+name+'.mp3';
-  // intenta WAV
-  try{const r=await fetch(wav,{cache:'no-store'}); if(!r.ok) throw new Error('404 '+wav);
-      const a=await r.arrayBuffer(); return await ctx().decodeAudioData(a);}
-  catch(e1){
-    // fallback MP3
-    try{const r=await fetch(mp3,{cache:'no-store'}); if(!r.ok) throw new Error('404 '+mp3);
-        const a=await r.arrayBuffer(); return await ctx().decodeAudioData(a);}
-    catch(e2){ throw new Error('No pude cargar '+name+' (.wav/.mp3)');}
-  }
+function silentClick(){const c=ctx();const o=c.createOscillator();const g=c.createGain();
+g.gain.value=0.0001;o.connect(g).connect(c.destination);o.start();o.stop(c.currentTime+0.05);}
+async function unlock(){ctx();silentClick();try{await actx.resume();}catch{}}
+function initAudio(){
+  const c=ctx();
+  gMaster=c.createGain();gMaster.gain.value=0;gMaster.connect(c.destination);
+  osc=c.createOscillator();osc.type='sine';osc.frequency.value=110;gDrone=c.createGain();gDrone.gain.value=0;
+  osc.connect(gDrone).connect(gMaster);osc.start();
 }
-function makeLoop(buffer, gainStart=0){const c=ctx(); const src=c.createBufferSource();src.buffer=buffer;src.loop=true;const g=c.createGain();g.gain.value=gainStart;src.connect(g).connect(c.destination);src.start();return {src, gain:g};}
-function ramp(g,to,t=0.35){const c=ctx();const now=c.currentTime;g.cancelScheduledValues(now);g.setValueAtTime(g.value,now);g.linearRampToValueAtTime(to,now+t);}
-function trigOneShot(buffer, vol=0.9){const c=ctx();const s=c.createBufferSource();const g=c.createGain();g.gain.value=vol;s.buffer=buffer;s.connect(g).connect(c.destination);s.start();s.stop(c.currentTime+(buffer.duration||3));return s;}
+function ramp(g,to,t=0.6){const c=ctx();const now=c.currentTime;
+g.cancelScheduledValues(now);g.setValueAtTime(g.value,now);g.linearRampToValueAtTime(to,now+t);}
+function setPresenceAudio(on){
+  ramp(gMaster.gain,on?0.8:0.0,0.8);
+  ramp(gDrone.gain,on?0.3:0.0,0.8);
+}
 
-// CARGA
-const LOOP_NAMES = [
-  'breath_drone_base',
-  'breath_air_noise',
-  'kinetic_click_loop',
-  'kinetic_foley_loop',
-  'sub_pulse_loop',
-  'texture_hiss_loop'
+// ======== Texto generativo ========
+const textEl=document.getElementById('textOverlay');
+const PHRASES=[
+ "has sido un torito bravo durante {{t}} segundos.",
+ "Los sueños caen del cielo.",
+ "cierro los ojos, cuando los abro, salen modelos de los cuadros"
 ];
-const GRAIN_NAMES = ['choir_grain_01','choir_grain_02','choir_grain_03','choir_grain_04'];
-
-let loops = {};     // {name: {src, gain}}
-let grains = {};    // {name: AudioBuffer}
-let audioReady = false;
-
-async function loadAllAudio(){
-  log('Cargando loops y grains…','warn');
-  const bufs = await Promise.all(LOOP_NAMES.map(n=>loadBufferBase(n)));
-  LOOP_NAMES.forEach((n,i)=>{ loops[n] = makeLoop(bufs[i], 0.0); });
-  const gbufs = await Promise.all(GRAIN_NAMES.map(n=>loadBufferBase(n).catch(()=>null)));
-  GRAIN_NAMES.forEach((n,i)=>{ if(gbufs[i]) grains[n]=gbufs[i]; });
-  audioReady = true;
-  log('Audio cargado ✅','ok');
+let textTimer=null,presentStartMs=0,phraseIndex=0;
+function renderPhrase(){
+  const now=performance.now();
+  const tSec=presentStartMs?Math.max(0,Math.floor((now-presentStartMs)/1000)):0;
+  const raw=PHRASES[phraseIndex%PHRASES.length];
+  const msg=raw.replace(/\{\{\s*t\s*\}\}/g,String(tSec));
+  phraseIndex++;
+  textEl.textContent=msg;
+}
+function startTextLoop(){
+  if(textTimer) return;
+  renderPhrase();
+  textTimer=setInterval(renderPhrase,9000);
+}
+function stopTextLoop(){
+  if(textTimer){clearInterval(textTimer);textTimer=null;}
 }
 
-// Ganancias nominales por capa
-const LEVELS = {
-  breath_drone_base: 0.35,
-  breath_air_noise:  0.14,
-  kinetic_click_loop:0.18,
-  kinetic_foley_loop:0.0,   // boca abre
-  sub_pulse_loop:    0.30,
-  texture_hiss_loop: 0.10
-};
+// ======== FaceMesh detección simple ========
+const video=document.getElementById('cam');
+const canvas=document.getElementById('viz');
+const ctx2d=canvas.getContext('2d');
+const ovl=document.getElementById('ovl');
+const stage=document.getElementById('stage');
+const stateEl=document.getElementById('state');
+const metersEl=document.getElementById('meters');
 
-// presencia on/off
-function setPresence(on){
-  stateEl.textContent = 'estado: ' + (on?'presente':'ausente');
-  if(!audioReady) return;
-  const t = on ? 0.8 : 1.0;
-  for(const n of Object.keys(LEVELS)){
-    const target = on ? LEVELS[n] : 0.0;
-    ramp(loops[n].gain.gain, target, t);
-  }
-  // foley queda controlado por boca aparte
-}
-
-// control de boca (foley)
-function setMouth(open){
-  if(!audioReady) return;
-  const to = open ? 0.32 : 0.0; // sube/baja según sensibilidad
-  ramp(loops['kinetic_foley_loop'].gain.gain, to, 0.20);
-}
-
-// disparo de granos (cejas)
-function fireRandomGrain(){
-  const keys = Object.keys(grains);
-  if(!keys.length) return;
-  const key = keys[Math.floor(Math.random()*keys.length)];
-  trigOneShot(grains[key], 0.85);
-}
-
-// ====== Visual ======
-function drawBG(t, motion){
-  const w=canvas.width=stage.clientWidth*2, h=canvas.height=stage.clientHeight*2;
-  const cx=ctx2d;
-  const cn = (Math.sin(t*0.0006)+1)/2; // 0..1 lento
-  const m = Math.min(1, motion*2.0);
-
-  const hue = (200 + 80*cn + 100*m) % 360;
-  const sat = 16 + 36*m;
-  const lit = 8 + 18*cn + 12*m;
-
-  const grd = cx.createRadialGradient(w*0.5, h*(0.38+0.12*m), w*0.08, w*0.5, h*0.62, Math.max(w,h)*0.8);
-  grd.addColorStop(0, `hsla(${hue}, ${sat+18}%, ${Math.min(92,lit+30)}%, ${0.16+0.22*m})`);
-  grd.addColorStop(1, `hsla(${(hue+180)%360}, ${sat}%, ${Math.max(5,lit-5)}%, ${0.96})`);
-  cx.fillStyle = grd; cx.fillRect(0,0,w,h);
-}
-
-// ====== Face / Gestos ======
-let faceMesh, started=false, present=false, lastSeen=0;
-let lastNose=null, motionEMA=0;
-
-let browsUp=false, mouthOpen=false, browsEMA=0, mouthEMA=0;
-let browBase=0, browFrames=0, browCalibrated=false;
-
-const NOSE_BASE=1, CHIN=152, MOUTH_TOP=13, MOUTH_BOTTOM=14;
-const L_EYE_TOP=159, L_EYE_BOTTOM=145, R_EYE_TOP=386, R_EYE_BOTTOM=374; // para referencia si quisieras ojos
+let faceMesh,present=false,lastSeen=0,seenCount=0;
+let browsEMA=0,browBase=0,browFrames=0,browCalibrated=false,browsUp=false;
+let mouthEMA=0,mouthOpen=false,lastNose=null,motionEMA=0;
+const NOSE=1,CHIN=152,MOUTH_TOP=13,MOUTH_BOTTOM=14;
 const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
 const lerp=(a,b,t)=>a+(b-a)*t;
 
-const SEEN_FRAMES=6;     // frames consecutivos para decir "hay rostro"
-const LOST_TIMEOUT=900;  // ms sin rostro para apagar
-let seenCount=0;
+// presencia global
+function setPresence(on){
+  stateEl.textContent='estado: '+(on?'presente':'ausente');
+  setPresenceAudio(on);
+  if(on){
+    presentStartMs=performance.now();
+    textEl.classList.add('show');
+    startTextLoop();
+  }else{
+    textEl.classList.remove('show');
+    stopTextLoop();
+  }
+}
+
+function drawBG(t,motion){
+  const w=canvas.width=stage.clientWidth*2,h=canvas.height=stage.clientHeight*2;
+  const cx=ctx2d;
+  const cn=(Math.sin(t*0.0006)+1)/2;
+  const m=Math.min(1,motion*2.0);
+  const hue=(200+80*cn+100*m)%360;
+  const sat=16+36*m,lit=8+18*cn+12*m;
+  const grd=cx.createRadialGradient(w*0.5,h*(0.38+0.12*m),w*0.08,w*0.5,h*0.62,Math.max(w,h)*0.8);
+  grd.addColorStop(0,`hsla(${hue},${sat+18}%,${Math.min(92,lit+30)}%,${0.16+0.22*m})`);
+  grd.addColorStop(1,`hsla(${(hue+180)%360},${sat}%,${Math.max(5,lit-5)}%,${0.96})`);
+  cx.fillStyle=grd;cx.fillRect(0,0,w,h);
+}
 
 function onResults(res){
-  const t = performance.now();
-  const hasFace = res && res.multiFaceLandmarks && res.multiFaceLandmarks.length>0;
-
+  const t=performance.now();
+  const hasFace=res&&res.multiFaceLandmarks&&res.multiFaceLandmarks.length>0;
   if(hasFace){
-    seenCount++; lastSeen=t;
-    const lm = res.multiFaceLandmarks[0];
-    const scale = dist(lm[NOSE_BASE], lm[CHIN]);
-
-    // movimiento (nariz)
-    const nose = lm[NOSE_BASE];
+    seenCount++;lastSeen=t;
+    const lm=res.multiFaceLandmarks[0];
+    const scale=dist(lm[NOSE],lm[CHIN]);
+    const nose=lm[NOSE];
     if(lastNose){
-      const d = Math.hypot(nose.x-lastNose.x, nose.y-lastNose.y);
-      motionEMA = motionEMA*0.85 + d*0.15;
-      // modulación de filtros: sub / hiss / click loop
-      if(audioReady){
-        const bp = loops['breath_drone_base']; // usamos su gain node para referencia de ctx
-        const now = ctx().currentTime;
-        // leve side efecto: subir drone/hiss con movimiento
-        ramp(loops['texture_hiss_loop'].gain.gain, Math.min(0.22, 0.08 + motionEMA*1.2), 0.2);
-        ramp(loops['kinetic_click_loop'].gain.gain, Math.min(0.28, 0.12 + motionEMA*1.5), 0.15);
-      }
+      const d=Math.hypot(nose.x-lastNose.x,nose.y-lastNose.y);
+      motionEMA=motionEMA*0.85+d*0.15;
     }
-    lastNose = {x:nose.x,y:nose.y};
-
-    // ---- CEJAS (calibración + histéresis) ----
-    const browY = (lm[10].y + lm[67].y + lm[297].y) / 3;
-    const eyeY  = (lm[L_EYE_TOP].y + lm[R_EYE_TOP].y) / 2;
-    const browLift = (eyeY - browY) / scale;  // ↑ cejas => mayor
-    browsEMA = lerp(browsEMA, browLift, 0.25);
-    if(!browCalibrated){ browBase+=browsEMA; browFrames++; if(browFrames>70){browBase/=browFrames; browCalibrated=true; log('Cejas calibradas ✅','ok');} }
-    const liftDelta = browsEMA - browBase;
-    const raiseT = 0.12, lowerT=0.08; // exigente
-    let browsUpNow = browsUp;
-    if(!browsUp && liftDelta > raiseT) { browsUpNow=true; fireRandomGrain(); } // dispara on-rising
-    if(browsUp && liftDelta < lowerT) { browsUpNow=false; }
-    browsUp = browsUpNow;
-
-    // ---- BOCA (umbral estable) ----
-    const mouthDist = dist(lm[MOUTH_TOP], lm[MOUTH_BOTTOM]);
-    const mm = mouthDist/scale;
-    mouthEMA = lerp(mouthEMA, mm, 0.35);
-    const mouthOpenNow = mouthEMA > 0.34; // ajusta 0.32–0.38 si hace falta
-    if(mouthOpenNow !== mouthOpen){ mouthOpen = mouthOpenNow; setMouth(mouthOpen); }
-
-    // presencia (on) cuando rostro estable
-    if(!present && seenCount>=SEEN_FRAMES){ present=true; setPresence(true); stateEl.textContent='estado: presente'; }
+    lastNose={x:nose.x,y:nose.y};
+    // cejas
+    const browY=(lm[10].y+lm[67].y+lm[297].y)/3;
+    const eyeY=(lm[159].y+lm[386].y)/2;
+    const browLift=(eyeY-browY)/scale;
+    browsEMA=lerp(browsEMA,browLift,0.25);
+    if(!browCalibrated){browBase+=browsEMA;browFrames++;if(browFrames>70){browBase/=browFrames;browCalibrated=true;log('Cejas calibradas ✅','ok');}}
+    const liftDelta=browsEMA-browBase;
+    const raiseT=0.12,lowerT=0.08;
+    let browsUpNow=browsUp;
+    if(!browsUp&&liftDelta>raiseT)browsUpNow=true;
+    if(browsUp&&liftDelta<lowerT)browsUpNow=false;
+    browsUp=browsUpNow;
+    // boca
+    const mDist=dist(lm[MOUTH_TOP],lm[MOUTH_BOTTOM])/scale;
+    mouthEMA=lerp(mouthEMA,mDist,0.35);
+    const mouthOpenNow=mouthEMA>0.34;
+    if(mouthOpenNow!==mouthOpen)mouthOpen=mouthOpenNow;
+    if(!present&&seenCount>6){present=true;setPresence(true);}
   }else{
-    seenCount=0; lastNose=null; motionEMA=0;
-    if(present && (performance.now()-lastSeen)>LOST_TIMEOUT){
-      present=false; setPresence(false); stateEl.textContent='estado: ausente';
-    }
+    seenCount=0;lastNose=null;motionEMA=0;
+    if(present&&(performance.now()-lastSeen)>900){present=false;setPresence(false);}
   }
-
-  drawBG(performance.now(), motionEMA);
-  metersEl.textContent = `browΔ: ${ (browsEMA-browBase).toFixed(3) } · mouth: ${ mouthEMA.toFixed(3) }`;
+  drawBG(performance.now(),motionEMA);
+  metersEl.textContent=`browΔ: ${(browsEMA-browBase).toFixed(3)} · mouth: ${mouthEMA.toFixed(3)}`;
 }
 
-// ====== Start (iOS safe, con watchdog de cámara) ======
+// start
 async function start(){
-  if(started) return; started=true;
-  try{
-    const ok = await unlock(); if(!ok) throw new Error('Audio bloqueado');
-    await loadAllAudio();
-
-    log('Pidiendo cámara…','warn');
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video:{facingMode:'user',width:{ideal:720},height:{ideal:1280}}, audio:false
-    });
-
-    const watchdog = setTimeout(()=>{
-      ovl.style.display='flex';
-      ovl.querySelector('.cta').textContent='No se pudo iniciar la cámara. Toca para reintentar.';
-      log('Watchdog: video no inició en 5s','err');
-      started=false;
-    },5000);
-
-    video.srcObject = stream;
-    await video.play();
-    clearTimeout(watchdog);
-    log('Cámara OK ✅','ok');
-    ovl.style.display='none';
-
-    faceMesh = new FaceMesh({locateFile:(f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`});
-    faceMesh.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:0.6,minTrackingConfidence:0.6});
-    faceMesh.onResults(onResults);
-    new Camera(video,{onFrame:async()=>{await faceMesh.send({image:video});}}).start();
-
-    // arranca apagado hasta que haya presencia
-    setPresence(false);
-    log('Sistema listo ✅ · mira a cámara para “nacer”','ok');
-  }catch(e){
-    log('Error: '+(e?.message||e),'err');
-    ovl.style.display='flex';
-    ovl.querySelector('.cta').textContent='Algo falló. Toca aquí para reintentar.';
-    started=false;
-  }
+  if(started)return;started=true;
+  await unlock();initAudio();
+  log('AudioContext: '+ctx().state,'ok');
+  log('Pidiendo cámara…','warn');
+  const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:720},height:{ideal:1280}},audio:false});
+  const watchdog=setTimeout(()=>{ovl.style.display='flex';started=false;},5000);
+  video.srcObject=stream;await video.play();clearTimeout(watchdog);
+  ovl.style.display='none';
+  faceMesh=new FaceMesh({locateFile:(f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`});
+  faceMesh.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:0.6,minTrackingConfidence:0.6});
+  faceMesh.onResults(onResults);
+  new Camera(video,{onFrame:async()=>{await faceMesh.send({image:video});}}).start();
+  setPresence(false);
+  log('Sistema listo ✅','ok');
 }
-
-document.getElementById('stage').addEventListener('pointerdown', start, { once:false });
-drawBG(performance.now(), 0);
-log('Tip: sube volumen físico y desactiva modo silencio 🔊','warn');
+document.getElementById('stage').addEventListener('pointerdown',start,{once:false});
+drawBG(performance.now(),0);
+log('Tip: desactiva el modo silencio 🔊','warn');
 </script>
 </body>
 </html>
