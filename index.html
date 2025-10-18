@@ -1,8 +1,10 @@
 <!doctype html>
 <html lang="es">
 <head>
-<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>PRESENCIA v6 — Times + texto vivo</title>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<title>PRESENCIA v6 — iOS fix + Times + texto vivo</title>
 <style>
   :root{--bg:#0a0a0b;--fg:#e8e8ec}
   *{box-sizing:border-box}
@@ -43,12 +45,19 @@
     0%,100%{ opacity:.9; transform:translateY(2px);}
     50%{    opacity:1;  transform:translateY(-2px);}
   }
+
+  /* iOS: evitar selección/tap highlight */
+  .stage, .overlay, .cta {
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="stage" id="stage">
-    <video id="cam" playsinline muted></video>
+    <video id="cam" playsinline webkit-playsinline autoplay muted></video>
     <canvas id="viz"></canvas>
     <div class="overlay" id="ovl"><div class="cta">Toca aquí para activar cámara + audio</div></div>
     <div class="hud">
@@ -64,7 +73,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
 <script>
-/*  PRESENCIA v6: v5 + Times + respiración + fondo más claro + blur por movimiento  */
+/*  PRESENCIA v6 (iOS safe): Times + texto “respira” + blur por movimiento + audio loops con gestos  */
 const logEl=document.getElementById('log');
 function log(m,c=''){const d=document.createElement('div');d.className=c;d.textContent=m;
 logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight;}
@@ -74,71 +83,86 @@ let actx;function ctx(){return actx||(actx=new (window.AudioContext||window.webk
 function silentClick(){const c=ctx();const o=c.createOscillator();const g=c.createGain();
 g.gain.value=0.0001;o.connect(g).connect(c.destination);o.start();o.stop(c.currentTime+0.05);}
 async function unlock(){ctx();silentClick();try{await actx.resume();}catch{} log('AudioContext: '+actx.state,actx.state==='running'?'ok':'warn');return actx.state==='running';}
-async function loadBuffer(name){for(const ext of ['wav','mp3']){try{const r=await fetch(`assets/${name}.${ext}`,{cache:'no-store'});if(r.ok){const a=await r.arrayBuffer();return await ctx().decodeAudioData(a);}}catch{}}
-throw new Error('No pude cargar '+name);}
+async function loadBuffer(name){
+  for(const ext of ['wav','mp3']){
+    try{
+      const r=await fetch(`assets/${name}.${ext}`,{cache:'no-store'});
+      if(r.ok){const a=await r.arrayBuffer();return await ctx().decodeAudioData(a);}
+    }catch{}
+  }
+  throw new Error('No pude cargar '+name);
+}
 function makeLoop(b,v=0){const c=ctx();const s=c.createBufferSource();s.buffer=b;s.loop=true;const g=c.createGain();g.gain.value=v;s.connect(g).connect(c.destination);s.start();return{src:s,gain:g};}
 function ramp(p,v,t=0.4){const c=ctx();const n=c.currentTime;p.cancelScheduledValues(n);p.setValueAtTime(p.value,n);p.linearRampToValueAtTime(v,n+t);}
 function trig(b,v=0.9){const c=ctx();const s=c.createBufferSource();const g=c.createGain();g.gain.value=v;s.buffer=b;s.connect(g).connect(c.destination);s.start();s.stop(c.currentTime+(b.duration||3));}
 
+// Archivos
 const LOOPS=['breath_drone_base','breath_air_noise','sub_pulse_loop','texture_hiss_loop','kinetic_click_loop','kinetic_foley_loop'];
 const GRAINS=['choir_grain_01','choir_grain_02','choir_grain_03','choir_grain_04'];
 let loops={},grains={},audioReady=false;
-const LEVELS={breath_drone_base:.38,breath_air_noise:.16,sub_pulse_loop:.32,texture_hiss_loop:.12,kinetic_click_loop:.20,kinetic_foley_loop:0}; // un pelín más claros
+// niveles un pelín más claros
+const LEVELS={breath_drone_base:.38,breath_air_noise:.16,sub_pulse_loop:.32,texture_hiss_loop:.12,kinetic_click_loop:.20,kinetic_foley_loop:0};
 
 async function loadAll(){log('Cargando audio…','warn');
-const b=await Promise.all(LOOPS.map(n=>loadBuffer(n)));LOOPS.forEach((n,i)=>loops[n]=makeLoop(b[i],0));
-const g=await Promise.all(GRAINS.map(n=>loadBuffer(n).catch(()=>null)));GRAINS.forEach((n,i)=>{if(g[i])grains[n]=g[i];});
-audioReady=true;log('Audio listo ✅','ok');}
+  const b=await Promise.all(LOOPS.map(n=>loadBuffer(n))); LOOPS.forEach((n,i)=>loops[n]=makeLoop(b[i],0));
+  const g=await Promise.all(GRAINS.map(n=>loadBuffer(n).catch(()=>null))); GRAINS.forEach((n,i)=>{if(g[i])grains[n]=g[i];});
+  audioReady=true; log('Audio listo ✅','ok');
+}
 
 function setPresence(on){
   stateEl.textContent='estado: '+(on?'presente':'ausente');
-  if(!audioReady)return;
-  for(const n in LEVELS){ramp(loops[n].gain.gain,on?LEVELS[n]:0,0.7);}
-  // Texto ON/OFF
-  if(on){presentStart=performance.now();textEl.classList.add('show');startText();}
-  else{stopText();textEl.classList.remove('show');}
+  if(!audioReady) return;
+  for(const n in LEVELS) ramp(loops[n].gain.gain, on?LEVELS[n]:0, 0.7);
+  // texto ON/OFF
+  if(on){ presentStart=performance.now(); textEl.classList.add('show'); startText(); }
+  else  { stopText(); textEl.classList.remove('show'); }
 }
-function setMouth(o){if(audioReady)ramp(loops['kinetic_foley_loop'].gain.gain,o?.32:0,.2);}
-function grain(){const k=Object.keys(grains);if(!k.length)return;trig(grains[k[Math.floor(Math.random()*k.length)]],.85);}
-function motionMod(m){if(audioReady){
-  ramp(loops['texture_hiss_loop'].gain.gain,Math.min(.25,.10+m*1.0),.2);
-  ramp(loops['kinetic_click_loop'].gain.gain,Math.min(.30,.14+m*1.3),.15);
-}}
+function setMouth(o){ if(audioReady) ramp(loops['kinetic_foley_loop'].gain.gain, o?.32:0, .2); }
+function grain(){ const k=Object.keys(grains); if(!k.length) return; trig(grains[k[Math.floor(Math.random()*k.length)]], .85); }
+function motionMod(m){
+  if(!audioReady) return;
+  ramp(loops['texture_hiss_loop'].gain.gain, Math.min(.25,.10+m*1.0), .2);
+  ramp(loops['kinetic_click_loop'].gain.gain, Math.min(.30,.14+m*1.3), .15);
+}
 
 // — Texto —
 const textEl=document.getElementById('textOverlay');
 const PHRASES=[
- "has sido un torito bravo durante {{t}} segundos.",
- "Los sueños caen del cielo.",
- "cierro los ojos, cuando los abro, salen modelos de los cuadros."
+  "has sido un torito bravo durante {{t}} segundos.",
+  "Los sueños caen del cielo.",
+  "cierro los ojos, cuando los abro, salen modelos de los cuadros."
 ];
 let textTimer=null,presentStart=0,phraseIndex=0;
 function renderPhrase(){const tSec=Math.floor((performance.now()-presentStart)/1000);
-textEl.textContent=PHRASES[phraseIndex%PHRASES.length].replace(/\{\{\s*t\s*\}\}/g,tSec);
-phraseIndex++;}
-function startText(){if(textTimer)return;renderPhrase();textTimer=setInterval(renderPhrase,9000);}
-function stopText(){if(textTimer){clearInterval(textTimer);textTimer=null;}}
+  textEl.textContent=PHRASES[phraseIndex%PHRASES.length].replace(/\{\{\s*t\s*\}\}/g,tSec);
+  phraseIndex++;
+}
+function startText(){ if(textTimer) return; renderPhrase(); textTimer=setInterval(renderPhrase,9000); }
+function stopText(){ if(textTimer){ clearInterval(textTimer); textTimer=null; } }
 
 // — Visual + Gestos —
 const video=document.getElementById('cam'),canvas=document.getElementById('viz'),ctx2d=canvas.getContext('2d'),ovl=document.getElementById('ovl'),stage=document.getElementById('stage'),stateEl=document.getElementById('state'),metersEl=document.getElementById('meters');
 let faceMesh,started=false,present=false,lastSeen=0,seen=0,browsEMA=0,browBase=0,browFrames=0,browCal=false,browsUp=false,mouthEMA=0,mouthOpen=false,lastNose=null,motionEMA=0;
-const N=1,C=152,MT=13,MB=14,LE=159,RE=386;const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y),lerp=(a,b,t)=>a+(b-a)*t;
+const N=1,C=152,MT=13,MB=14,LE=159,RE=386; const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y), lerp=(a,b,t)=>a+(b-a)*t;
 
 function bg(t,m){
-  const w=canvas.width=stage.clientWidth*2,h=canvas.height=stage.clientHeight*2,cx=ctx2d;
+  const w=canvas.width=stage.clientWidth*2, h=canvas.height=stage.clientHeight*2, cx=ctx2d;
   const cn=(Math.sin(t*0.0006)+1)/2, M=Math.min(1,m*2);
   // fondo un poco más claro
   const hue=(210+70*cn+80*M)%360, sat=20+40*M, lit=12+22*cn+16*M;
-  const grd=cx.createRadialGradient(w*.5,h*(.36+.10*M),w*.08,w*.5,h*.60,Math.max(w,h)*.8);
-  grd.addColorStop(0,`hsla(${hue},${sat+18}%,${Math.min(94,lit+28)}%,${.18+.24*M})`);
-  grd.addColorStop(1,`hsla(${(hue+180)%360},${sat}%,${Math.max(7,lit-4)}%,${.95})`);
+  const grd=cx.createRadialGradient(w*.5, h*(.36+.10*M), w*.08, w*.5, h*.60, Math.max(w,h)*.8);
+  grd.addColorStop(0, `hsla(${hue}, ${sat+18}%, ${Math.min(94,lit+28)}%, ${.18+.24*M})`);
+  grd.addColorStop(1, `hsla(${(hue+180)%360}, ${sat}%, ${Math.max(7,lit-4)}%, ${.95})`);
   cx.fillStyle=grd; cx.fillRect(0,0,w,h);
-  // aplica un blur sutil al texto según movimiento
+  // blur del texto según movimiento
   textEl.style.filter = `blur(${(M*1.8).toFixed(2)}px)`;
+  // (opcional) velocidad de respiración dinámica:
+  const dur = Math.max(1.6, 2.8 - M*1.3);
+  textEl.style.animationDuration = `${dur.toFixed(2)}s`;
 }
 
 function onResults(r){
-  const t=performance.now(),f=r&&r.multiFaceLandmarks&&r.multiFaceLandmarks[0];
+  const t=performance.now(), f=r&&r.multiFaceLandmarks&&r.multiFaceLandmarks[0];
   if(f){
     seen++; lastSeen=t;
     const s=dist(f[N],f[C]), nose=f[N];
@@ -152,7 +176,7 @@ function onResults(r){
     // cejas
     const browY=(f[10].y+f[67].y+f[297].y)/3, eyeY=(f[LE].y+f[RE].y)/2;
     const browLift=(eyeY-browY)/s; browsEMA=lerp(browsEMA,browLift,.25);
-    if(!browCal){browBase+=browsEMA;browFrames++; if(browFrames>70){browBase/=browFrames;browCal=true;log('Cejas calibradas ✅','ok');}}
+    if(!browCal){browBase+=browsEMA;browFrames++; if(browFrames>70){browBase/=browsEMA?browFrames:1; browCal=true; log('Cejas calibradas ✅','ok');}}
     const dlt=browsEMA-browBase;
     if(!browsUp && dlt>0.12){browsUp=true; grain();}
     if(browsUp && dlt<0.08){browsUp=false;}
@@ -166,36 +190,85 @@ function onResults(r){
     seen=0; lastNose=null; motionEMA=0;
     if(present && (performance.now()-lastSeen)>900){present=false; setPresence(false);}
   }
-
   bg(performance.now(), motionEMA);
   metersEl.textContent=`browΔ: ${(browsEMA-browBase).toFixed(3)} · mouth: ${mouthEMA.toFixed(3)}`;
 }
 
+// —— iOS-safe START (multi-listener + doble unlock + watchdog + mensajes claros) ——
 async function start(){
-  if(started) return; started=true;
-  try{
-    const ok=await unlock(); if(!ok) throw new Error('Audio bloqueado');
-    await loadAll();
-    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:720},height:{ideal:1280}},audio:false});
-    video.srcObject=stream; await video.play();
-    ovl.style.display='none'; log('Cámara OK ✅','ok');
+  if (window.__starting__) return;
+  window.__starting__ = true;
 
-    faceMesh=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`});
-    faceMesh.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:.6,minTrackingConfidence:.6});
-    faceMesh.onResults(onResults);
-    new Camera(video,{onFrame:async()=>{await faceMesh.send({image:video});}}).start();
+  try{
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      throw new Error('Este navegador no permite cámara (revisa iOS/Safari).');
+    }
+
+    // Desbloqueo de audio doble (osc + buffer 50ms)
+    await unlock();
+    { const c=ctx(); const silent=c.createBuffer(1, Math.max(1, c.sampleRate*0.05), c.sampleRate);
+      const src=c.createBufferSource(); src.buffer=silent; src.connect(c.destination); src.start(0);
+      try{ await c.resume(); }catch{} }
+    log('AudioContext: '+ctx().state, ctx().state==='running'?'ok':'warn');
+
+    if(!audioReady) await loadAll();
+
+    log('Pidiendo cámara…','warn');
+    const constraints={ video:{facingMode:'user',width:{ideal:720},height:{ideal:1280}}, audio:false };
+    const stream=await navigator.mediaDevices.getUserMedia(constraints);
+
+    const watchdog=setTimeout(()=>{
+      ovl.style.display='flex';
+      ovl.querySelector('.cta').textContent='No se pudo iniciar la cámara. Toca para reintentar (revisa permisos).';
+      log('Watchdog: la cámara no inició en 6s','err');
+      window.__starting__=false;
+    },6000);
+
+    const v=document.getElementById('cam');
+    v.setAttribute('playsinline',''); v.setAttribute('webkit-playsinline',''); v.setAttribute('autoplay',''); v.muted=true;
+    v.srcObject=stream; await v.play();
+    clearTimeout(watchdog);
+
+    ovl.style.display='none';
+    log('Cámara OK ✅','ok');
+
+    if(!window.__fmReady__){
+      const fm=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`});
+      fm.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:0.6,minTrackingConfidence:0.6});
+      fm.onResults(onResults);
+      new Camera(v,{onFrame:async()=>{await fm.send({image:v});}}).start();
+      window.__fmReady__=true;
+    }
 
     setPresence(false);
     log('Sistema listo ✅ · mira a cámara','ok');
   }catch(e){
-    log('Error: '+(e?.message||e),'err');
+    const msg=String(e&&e.message||e);
+    if(/NotAllowedError|denied|Permission/i.test(msg)){
+      log('Permiso de cámara denegado. Pulsa el candado → “Permisos” → Cámara: Permitir.', 'err');
+    }else if(/NotFoundError|no device|overconstrained/i.test(msg)){
+      log('No se encontró cámara frontal. Cierra otras apps que usen cámara y reintenta.', 'err');
+    }else{
+      log('Error: '+msg,'err');
+    }
     ovl.style.display='flex';
-    ovl.querySelector('.cta').textContent='Algo falló. Toca aquí para reintentar.';
-    started=false;
+    ovl.querySelector('.cta').textContent='Toca para reintentar (revisa permisos/caché)';
+    window.__starting__=false;
   }
 }
 
-document.getElementById('stage').addEventListener('pointerdown', start, { once:false });
+// multi-listener robusto para iOS
+function bindStartListeners(){
+  const fire=(e)=>{ e.preventDefault(); start(); };
+  ['pointerdown','touchend','click'].forEach(ev=>{
+    document.getElementById('ovl').addEventListener(ev, fire, { passive:false });
+    document.getElementById('stage').addEventListener(ev, fire, { passive:false });
+    document.body.addEventListener(ev, fire, { passive:false });
+  });
+}
+bindStartListeners();
+
+// primer fondo y tip
 bg(performance.now(), 0);
 log('Tip: sube volumen y quita modo silencio 🔊','warn');
 </script>
