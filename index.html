@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>PRESENCIA v3 — texto generativo</title>
+<title>PRESENCIA v5 — sonido + texto</title>
 <style>
   :root{--bg:#0a0a0b;--fg:#e8e8ec}
   *{box-sizing:border-box}
@@ -11,30 +11,29 @@
   .wrap{min-height:100vh;display:grid;place-items:center;padding:16px}
   .stage{position:relative;width:min(94vw,560px);aspect-ratio:9/16;border-radius:20px;
     overflow:hidden;background:#000;box-shadow:0 18px 48px rgba(0,0,0,.5)}
-  video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);opacity:0.05}
+  video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+    transform:scaleX(-1);opacity:0.05}
   canvas{position:absolute;inset:0;width:100%;height:100%}
   .overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
     background:rgba(0,0,0,.55);z-index:9;cursor:pointer;text-align:center}
   .cta{background:#ffffff12;border:1px solid #ffffff2d;color:#fff;padding:14px 18px;border-radius:14px;
     font-size:16px;backdrop-filter:blur(6px)}
-  .hud{position:absolute;left:10px;right:10px;bottom:10px;display:flex;justify-content:space-between;
-    font-size:12px;opacity:.9;mix-blend-mode:screen}
+  .hud{position:absolute;left:10px;right:10px;bottom:10px;display:flex;
+    justify-content:space-between;font-size:12px;opacity:.9;mix-blend-mode:screen}
   .pill{border:1px solid #2c2c30;background:#141417;padding:6px 10px;border-radius:999px}
-  .log{max-width:560px;width:100%;margin-top:12px;background:#0e0e11;border:1px solid #26262b;border-radius:12px;
-    padding:10px;font-size:12px;line-height:1.35;white-space:pre-wrap}
+  .log{max-width:560px;width:100%;margin-top:12px;background:#0e0e11;
+    border:1px solid #26262b;border-radius:12px;padding:10px;font-size:12px;line-height:1.35;white-space:pre-wrap}
   .ok{color:#9BEF8A}.warn{color:#FFD166}.err{color:#FF6B6B}
 
-  /* Overlay de texto poético */
+  /* Texto poético */
   #textOverlay{
-    position:absolute; inset:auto 12px 64px 12px;
-    text-align:center; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size:14px; line-height:1.4; letter-spacing:0.2px;
-    color:#eaeaf0; opacity:0; transform: translateY(6px);
-    transition: opacity .5s ease, transform .5s ease;
-    text-shadow: 0 1px 0 rgba(0,0,0,.25);
-    pointer-events:none; mix-blend-mode:screen;
+    position:absolute;inset:auto 12px 64px 12px;text-align:center;
+    font-family:ui-monospace,Menlo,monospace;font-size:14px;line-height:1.4;
+    color:#eaeaf0;opacity:0;transform:translateY(6px);
+    transition:opacity .6s ease,transform .6s ease;
+    pointer-events:none;mix-blend-mode:screen;text-shadow:0 1px 0 rgba(0,0,0,.25);
   }
-  #textOverlay.show{ opacity:1; transform: translateY(0); }
+  #textOverlay.show{opacity:1;transform:translateY(0);}
 </style>
 </head>
 <body>
@@ -52,160 +51,92 @@
   <div class="log" id="log"></div>
 </div>
 
+<!-- MediaPipe -->
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
 <script>
-// ======== Log util ========
+/*  PRESENCIA v5  
+    Igual que v4 + texto generativo
+    (El bloque de audio y gestos se mantiene)
+*/
 const logEl=document.getElementById('log');
 function log(m,c=''){const d=document.createElement('div');d.className=c;d.textContent=m;
 logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight;}
 
-// ======== Audio simple (sin samples externos para demo) ========
-let actx,gMaster,gDrone,osc,started=false;
-function ctx(){return actx||(actx=new (window.AudioContext||window.webkitAudioContext)());}
+// — Audio (igual v4) —
+let actx;function ctx(){return actx||(actx=new (window.AudioContext||window.webkitAudioContext)());}
 function silentClick(){const c=ctx();const o=c.createOscillator();const g=c.createGain();
 g.gain.value=0.0001;o.connect(g).connect(c.destination);o.start();o.stop(c.currentTime+0.05);}
-async function unlock(){ctx();silentClick();try{await actx.resume();}catch{}}
-function initAudio(){
-  const c=ctx();
-  gMaster=c.createGain();gMaster.gain.value=0;gMaster.connect(c.destination);
-  osc=c.createOscillator();osc.type='sine';osc.frequency.value=110;gDrone=c.createGain();gDrone.gain.value=0;
-  osc.connect(gDrone).connect(gMaster);osc.start();
-}
-function ramp(g,to,t=0.6){const c=ctx();const now=c.currentTime;
-g.cancelScheduledValues(now);g.setValueAtTime(g.value,now);g.linearRampToValueAtTime(to,now+t);}
-function setPresenceAudio(on){
-  ramp(gMaster.gain,on?0.8:0.0,0.8);
-  ramp(gDrone.gain,on?0.3:0.0,0.8);
-}
+async function unlock(){ctx();silentClick();try{await actx.resume();}catch{} log('AudioContext: '+actx.state,actx.state==='running'?'ok':'warn');return actx.state==='running';}
+async function loadBuffer(name){for(const ext of ['wav','mp3']){try{const r=await fetch(`assets/${name}.${ext}`,{cache:'no-store'});if(r.ok){const a=await r.arrayBuffer();return await ctx().decodeAudioData(a);}}catch{}}
+throw new Error('No pude cargar '+name);}
+function makeLoop(b,v=0){const c=ctx();const s=c.createBufferSource();s.buffer=b;s.loop=true;const g=c.createGain();g.gain.value=v;s.connect(g).connect(c.destination);s.start();return{src:s,gain:g};}
+function ramp(p,v,t=0.4){const c=ctx();const n=c.currentTime;p.cancelScheduledValues(n);p.setValueAtTime(p.value,n);p.linearRampToValueAtTime(v,n+t);}
+function trig(b,v=0.9){const c=ctx();const s=c.createBufferSource();const g=c.createGain();g.gain.value=v;s.buffer=b;s.connect(g).connect(c.destination);s.start();s.stop(c.currentTime+(b.duration||3));}
 
-// ======== Texto generativo ========
+const LOOPS=['breath_drone_base','breath_air_noise','sub_pulse_loop','texture_hiss_loop','kinetic_click_loop','kinetic_foley_loop'];
+const GRAINS=['choir_grain_01','choir_grain_02','choir_grain_03','choir_grain_04'];
+let loops={},grains={},audioReady=false;
+const LEVELS={breath_drone_base:.35,breath_air_noise:.14,sub_pulse_loop:.3,texture_hiss_loop:.1,kinetic_click_loop:.18,kinetic_foley_loop:0};
+async function loadAll(){log('Cargando audio…','warn');
+const b=await Promise.all(LOOPS.map(n=>loadBuffer(n)));LOOPS.forEach((n,i)=>loops[n]=makeLoop(b[i],0));
+const g=await Promise.all(GRAINS.map(n=>loadBuffer(n).catch(()=>null)));GRAINS.forEach((n,i)=>{if(g[i])grains[n]=g[i];});
+audioReady=true;log('Audio listo ✅','ok');}
+function setPresence(on){stateEl.textContent='estado: '+(on?'presente':'ausente');
+if(!audioReady)return;for(const n in LEVELS){ramp(loops[n].gain.gain,on?LEVELS[n]:0,0.7);}
+if(on){presentStart=performance.now();textEl.classList.add('show');startText();}
+else{stopText();textEl.classList.remove('show');}}
+function setMouth(o){if(audioReady)ramp(loops['kinetic_foley_loop'].gain.gain,o?.3:0,.2);}
+function grain(){const k=Object.keys(grains);if(!k.length)return;trig(grains[k[Math.floor(Math.random()*k.length)]],.85);}
+function motionMod(m){if(audioReady){ramp(loops['texture_hiss_loop'].gain.gain,Math.min(.24,.08+m*1.2),.2);
+ramp(loops['kinetic_click_loop'].gain.gain,Math.min(.28,.12+m*1.5),.15);}}
+
+// — Texto —
 const textEl=document.getElementById('textOverlay');
 const PHRASES=[
  "has sido un torito bravo durante {{t}} segundos.",
  "Los sueños caen del cielo.",
- "cierro los ojos, cuando los abro, salen modelos de los cuadros"
+ "cierro los ojos, cuando los abro, salen modelos de los cuadros."
 ];
-let textTimer=null,presentStartMs=0,phraseIndex=0;
-function renderPhrase(){
-  const now=performance.now();
-  const tSec=presentStartMs?Math.max(0,Math.floor((now-presentStartMs)/1000)):0;
-  const raw=PHRASES[phraseIndex%PHRASES.length];
-  const msg=raw.replace(/\{\{\s*t\s*\}\}/g,String(tSec));
-  phraseIndex++;
-  textEl.textContent=msg;
-}
-function startTextLoop(){
-  if(textTimer) return;
-  renderPhrase();
-  textTimer=setInterval(renderPhrase,9000);
-}
-function stopTextLoop(){
-  if(textTimer){clearInterval(textTimer);textTimer=null;}
-}
+let textTimer=null,presentStart=0,phraseIndex=0;
+function renderPhrase(){const tSec=Math.floor((performance.now()-presentStart)/1000);
+textEl.textContent=PHRASES[phraseIndex%PHRASES.length].replace(/\{\{\s*t\s*\}\}/g,tSec);
+phraseIndex++;}
+function startText(){if(textTimer)return;renderPhrase();textTimer=setInterval(renderPhrase,9000);}
+function stopText(){if(textTimer){clearInterval(textTimer);textTimer=null;}}
 
-// ======== FaceMesh detección simple ========
-const video=document.getElementById('cam');
-const canvas=document.getElementById('viz');
-const ctx2d=canvas.getContext('2d');
-const ovl=document.getElementById('ovl');
-const stage=document.getElementById('stage');
-const stateEl=document.getElementById('state');
-const metersEl=document.getElementById('meters');
-
-let faceMesh,present=false,lastSeen=0,seenCount=0;
-let browsEMA=0,browBase=0,browFrames=0,browCalibrated=false,browsUp=false;
-let mouthEMA=0,mouthOpen=false,lastNose=null,motionEMA=0;
-const NOSE=1,CHIN=152,MOUTH_TOP=13,MOUTH_BOTTOM=14;
-const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
-const lerp=(a,b,t)=>a+(b-a)*t;
-
-// presencia global
-function setPresence(on){
-  stateEl.textContent='estado: '+(on?'presente':'ausente');
-  setPresenceAudio(on);
-  if(on){
-    presentStartMs=performance.now();
-    textEl.classList.add('show');
-    startTextLoop();
-  }else{
-    textEl.classList.remove('show');
-    stopTextLoop();
-  }
-}
-
-function drawBG(t,motion){
-  const w=canvas.width=stage.clientWidth*2,h=canvas.height=stage.clientHeight*2;
-  const cx=ctx2d;
-  const cn=(Math.sin(t*0.0006)+1)/2;
-  const m=Math.min(1,motion*2.0);
-  const hue=(200+80*cn+100*m)%360;
-  const sat=16+36*m,lit=8+18*cn+12*m;
-  const grd=cx.createRadialGradient(w*0.5,h*(0.38+0.12*m),w*0.08,w*0.5,h*0.62,Math.max(w,h)*0.8);
-  grd.addColorStop(0,`hsla(${hue},${sat+18}%,${Math.min(92,lit+30)}%,${0.16+0.22*m})`);
-  grd.addColorStop(1,`hsla(${(hue+180)%360},${sat}%,${Math.max(5,lit-5)}%,${0.96})`);
-  cx.fillStyle=grd;cx.fillRect(0,0,w,h);
-}
-
-function onResults(res){
-  const t=performance.now();
-  const hasFace=res&&res.multiFaceLandmarks&&res.multiFaceLandmarks.length>0;
-  if(hasFace){
-    seenCount++;lastSeen=t;
-    const lm=res.multiFaceLandmarks[0];
-    const scale=dist(lm[NOSE],lm[CHIN]);
-    const nose=lm[NOSE];
-    if(lastNose){
-      const d=Math.hypot(nose.x-lastNose.x,nose.y-lastNose.y);
-      motionEMA=motionEMA*0.85+d*0.15;
-    }
-    lastNose={x:nose.x,y:nose.y};
-    // cejas
-    const browY=(lm[10].y+lm[67].y+lm[297].y)/3;
-    const eyeY=(lm[159].y+lm[386].y)/2;
-    const browLift=(eyeY-browY)/scale;
-    browsEMA=lerp(browsEMA,browLift,0.25);
-    if(!browCalibrated){browBase+=browsEMA;browFrames++;if(browFrames>70){browBase/=browFrames;browCalibrated=true;log('Cejas calibradas ✅','ok');}}
-    const liftDelta=browsEMA-browBase;
-    const raiseT=0.12,lowerT=0.08;
-    let browsUpNow=browsUp;
-    if(!browsUp&&liftDelta>raiseT)browsUpNow=true;
-    if(browsUp&&liftDelta<lowerT)browsUpNow=false;
-    browsUp=browsUpNow;
-    // boca
-    const mDist=dist(lm[MOUTH_TOP],lm[MOUTH_BOTTOM])/scale;
-    mouthEMA=lerp(mouthEMA,mDist,0.35);
-    const mouthOpenNow=mouthEMA>0.34;
-    if(mouthOpenNow!==mouthOpen)mouthOpen=mouthOpenNow;
-    if(!present&&seenCount>6){present=true;setPresence(true);}
-  }else{
-    seenCount=0;lastNose=null;motionEMA=0;
-    if(present&&(performance.now()-lastSeen)>900){present=false;setPresence(false);}
-  }
-  drawBG(performance.now(),motionEMA);
-  metersEl.textContent=`browΔ: ${(browsEMA-browBase).toFixed(3)} · mouth: ${mouthEMA.toFixed(3)}`;
-}
-
-// start
-async function start(){
-  if(started)return;started=true;
-  await unlock();initAudio();
-  log('AudioContext: '+ctx().state,'ok');
-  log('Pidiendo cámara…','warn');
-  const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:720},height:{ideal:1280}},audio:false});
-  const watchdog=setTimeout(()=>{ovl.style.display='flex';started=false;},5000);
-  video.srcObject=stream;await video.play();clearTimeout(watchdog);
-  ovl.style.display='none';
-  faceMesh=new FaceMesh({locateFile:(f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`});
-  faceMesh.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:0.6,minTrackingConfidence:0.6});
-  faceMesh.onResults(onResults);
-  new Camera(video,{onFrame:async()=>{await faceMesh.send({image:video});}}).start();
-  setPresence(false);
-  log('Sistema listo ✅','ok');
-}
+// — Visual+Gestos —
+const video=document.getElementById('cam'),canvas=document.getElementById('viz'),ctx2d=canvas.getContext('2d'),ovl=document.getElementById('ovl'),stage=document.getElementById('stage'),stateEl=document.getElementById('state'),metersEl=document.getElementById('meters');
+let faceMesh,started=false,present=false,lastSeen=0,seen=0,browsEMA=0,browBase=0,browFrames=0,browCal=false,browsUp=false,mouthEMA=0,mouthOpen=false,lastNose=null,motionEMA=0;
+const N=1,C=152,MT=13,MB=14,LE=159,RE=386;const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y),lerp=(a,b,t)=>a+(b-a)*t;
+function bg(t,m){const w=canvas.width=stage.clientWidth*2,h=canvas.height=stage.clientHeight*2,cx=ctx2d,cn=(Math.sin(t*0.0006)+1)/2,M=Math.min(1,m*2);
+const hue=(200+80*cn+100*M)%360,sat=16+36*M,lit=8+18*cn+12*M;
+const grd=cx.createRadialGradient(w*.5,h*(.38+.12*M),w*.08,w*.5,h*.62,Math.max(w,h)*.8);
+grd.addColorStop(0,`hsla(${hue},${sat+18}%,${Math.min(92,lit+30)}%,${.16+.22*M})`);
+grd.addColorStop(1,`hsla(${(hue+180)%360},${sat}%,${Math.max(5,lit-5)}%,${.96})`);
+cx.fillStyle=grd;cx.fillRect(0,0,w,h);}
+function onResults(r){const t=performance.now(),f=r&&r.multiFaceLandmarks&&r.multiFaceLandmarks[0];
+if(f){seen++;lastSeen=t;const s=dist(f[N],f[C]),nose=f[N];
+if(lastNose){const d=Math.hypot(nose.x-lastNose.x,nose.y-lastNose.y);motionEMA=motionEMA*.85+d*.15;motionMod(motionEMA);}
+lastNose={x:nose.x,y:nose.y};
+const bY=(f[10].y+f[67].y+f[297].y)/3,eY=(f[LE].y+f[RE].y)/2,bLift=(eY-bY)/s;
+browsEMA=lerp(browsEMA,bLift,.25);
+if(!browCal){browBase+=browsEMA;browFrames++;if(browFrames>70){browBase/=browFrames;browCal=true;log('Cejas calibradas ✅','ok');}}
+const Δ=browsEMA-browBase;if(!browsUp&&Δ>0.12){browsUp=true;grain();}if(browsUp&&Δ<0.08)browsUp=false;
+const mD=dist(f[MT],f[MB])/s;mouthEMA=lerp(mouthEMA,mD,.35);
+const mO=mouthEMA>0.34;if(mO!==mouthOpen){mouthOpen=mO;setMouth(mouthOpen);}
+if(!present&&seen>=6){present=true;setPresence(true);}}
+else{seen=0;lastNose=null;motionEMA=0;if(present&&(performance.now()-lastSeen)>900){present=false;setPresence(false);}}
+bg(performance.now(),motionEMA);
+metersEl.textContent=`browΔ:${(browsEMA-browBase).toFixed(3)}·mouth:${mouthEMA.toFixed(3)}`;}
+async function start(){if(started)return;started=true;
+try{await unlock();await loadAll();const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:720},height:{ideal:1280}},audio:false});
+video.srcObject=s;await video.play();ovl.style.display='none';faceMesh=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`});
+faceMesh.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:.6,minTrackingConfidence:.6});
+faceMesh.onResults(onResults);new Camera(video,{onFrame:async()=>{await faceMesh.send({image:video});}}).start();setPresence(false);
+log('Sistema listo ✅','ok');}catch(e){log('Error: '+(e?.message||e),'err');ovl.style.display='flex';started=false;}}
 document.getElementById('stage').addEventListener('pointerdown',start,{once:false});
-drawBG(performance.now(),0);
-log('Tip: desactiva el modo silencio 🔊','warn');
+bg(performance.now(),0);log('Tip: sube volumen 🔊','warn');
 </script>
 </body>
 </html>
