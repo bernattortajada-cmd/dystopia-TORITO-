@@ -3,8 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<meta name="apple-mobile-web-app-capable" content="yes"/>
-<title>PRESENCIA v6.3 — botón fijo iOS + audio seguro</title>
+<title>PRESENCIA v7 — Chrome ready</title>
 <style>
   :root{--bg:#0a0a0b;--fg:#e8e8ec}
   *{box-sizing:border-box}
@@ -18,45 +17,46 @@
   .overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
     background:rgba(0,0,0,.55);z-index:9;text-align:center}
   .cta{background:#ffffff12;border:1px solid #ffffff2d;color:#fff;padding:14px 18px;border-radius:14px;
-    font-size:16px;backdrop-filter:blur(6px)}
+    font-size:16px;backdrop-filter:blur(6px);cursor:pointer}
   .hud{position:absolute;left:10px;right:10px;bottom:44px;display:flex;justify-content:space-between;
     font-size:12px;opacity:.9;mix-blend-mode:screen}
   .pill{border:1px solid #2c2c30;background:#141417;padding:6px 10px;border-radius:999px}
   .log{max-width:560px;width:100%;margin-top:12px;background:#0e0e11;border:1px solid #26262b;border-radius:12px;
     padding:10px;font-size:12px;line-height:1.35;white-space:pre-wrap}
   .ok{color:#9BEF8A}.warn{color:#FFD166}.err{color:#FF6B6B}
+
+  /* Texto Times que “respira” */
   #textOverlay{position:absolute;inset:auto 12px 92px 12px;text-align:center;
     font-family:"Times New Roman", Times, serif;font-size:16px;line-height:1.5;color:#f0f0f4;
     opacity:0;transform:translateY(6px);transition:opacity .6s ease,transform .6s ease,filter .2s ease;
     pointer-events:none;mix-blend-mode:screen;text-shadow:0 1px 0 rgba(0,0,0,.25)}
-  #textOverlay.show{opacity:1;transform:translateY(0);animation:breathe 6s ease-in-out infinite}
+  #textOverlay.show{opacity:1;transform:translateY(0);animation:breathe 5s ease-in-out infinite}
   @keyframes breathe{0%,100%{opacity:.9;transform:translateY(2px)}50%{opacity:1;transform:translateY(-2px)}}
+
+  /* Botones de test (puedes borrarlos luego) */
   .tester{position:absolute;left:10px;right:10px;bottom:6px;display:flex;gap:8px;justify-content:center;z-index:10}
-  .btn{background:#ffffff12;border:1px solid #ffffff2d;color:#fff;padding:8px 10px;border-radius:12px;font-size:12px}
-  .stage,.overlay,.cta{-webkit-user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
-  /* Botón fijo de inicio */
-  .startBtn{
-    position:absolute;left:50%;bottom:14px;transform:translateX(-50%);
-    z-index:11;padding:10px 14px;border-radius:12px;
-    background:#ffffff18;color:#fff;border:1px solid #ffffff30;
-    font-size:14px;backdrop-filter:blur(6px);cursor:pointer;
-  }
-  .startBtn:active{transform:translateX(-50%) scale(0.96);}
+  .btn{background:#ffffff12;border:1px solid #ffffff2d;color:#fff;padding:8px 10px;border-radius:12px;font-size:12px;cursor:pointer}
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="stage" id="stage">
-    <video id="cam" playsinline webkit-playsinline autoplay muted></video>
+    <video id="cam" playsinline autoplay muted></video>
     <canvas id="viz"></canvas>
-    <div class="overlay" id="ovl"><div class="cta" id="cta">Toca aquí para activar cámara + audio</div></div>
+
+    <!-- Overlay de inicio -->
+    <div class="overlay" id="ovl"><div class="cta" id="cta">Toca para activar cámara + audio</div></div>
+
+    <!-- HUD -->
     <div class="hud">
       <div class="pill" id="state">estado: idle</div>
       <div class="pill" id="meters">browΔ: - · mouth: -</div>
     </div>
+
+    <!-- Texto -->
     <div id="textOverlay"></div>
-    <!-- Botón fijo de inicio -->
-    <button id="startBtn" class="startBtn" type="button" onclick="userStart()">▶︎ Iniciar (cámara + audio)</button>
+
+    <!-- Tester -->
     <div class="tester">
       <button class="btn" id="btnTest">🔊 Probar audio</button>
       <button class="btn" id="btnMute">🔇 Mute</button>
@@ -70,75 +70,57 @@
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
 <script>
-/* Presencia v6.3 con fallback <audio> + botón iOS seguro */
+/* PRESENCIA v7 — Chrome-ready: flujo simple, WebAudio buffers, masterGain, logs claros */
 const logEl=document.getElementById('log');
 function log(m,c=''){const d=document.createElement('div');d.className=c;d.textContent=m;logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight;}
 
-const video=document.getElementById('cam'),canvas=document.getElementById('viz'),ctx2d=canvas.getContext('2d');
-const stage=document.getElementById('stage'),cta=document.getElementById('cta'),stateEl=document.getElementById('state'),metersEl=document.getElementById('meters');
-const textEl=document.getElementById('textOverlay');
+const video=document.getElementById('cam'), canvas=document.getElementById('viz'), ctx2d=canvas.getContext('2d');
+const ovl=document.getElementById('ovl'), cta=document.getElementById('cta'), stage=document.getElementById('stage');
+const stateEl=document.getElementById('state'), metersEl=document.getElementById('meters'), textEl=document.getElementById('textOverlay');
 
-let actx; function ctx(){return actx||(actx=new (window.AudioContext||window.webkitAudioContext)());}
-function silentClick(){const c=ctx();const o=c.createOscillator();const g=c.createGain();g.gain.value=0.0001;o.connect(g).connect(c.destination);o.start();o.stop(c.currentTime+0.05);}
-let masterGain;
-function ensureMaster(){const c=ctx();if(!masterGain){masterGain=c.createGain();masterGain.gain.value=0;masterGain.connect(c.destination);}return masterGain;}
+let actx, masterGain;
+function ctx(){return actx||(actx=new (window.AudioContext||window.webkitAudioContext)());}
+function ensureMaster(){const c=ctx(); if(!masterGain){ masterGain=c.createGain(); masterGain.gain.value=0.0; masterGain.connect(c.destination);} return masterGain;}
+function ramp(param,to,t=0.35){const c=ctx(); const n=c.currentTime; param.cancelScheduledValues(n); param.setValueAtTime(param.value,n); param.linearRampToValueAtTime(to,n+t);}
 
-async function tryDecode(name){
+async function loadBuffer(name){
+  // Chrome decodifica muy bien WAV/MP3; intentamos WAV y luego MP3
   for(const ext of ['wav','mp3']){
+    const url=`assets/${name}.${ext}`;
     try{
-      const url=`assets/${name}.${ext}`;const r=await fetch(url,{cache:'no-store'});
-      if(!r.ok)continue;const a=await r.arrayBuffer();const b=await ctx().decodeAudioData(a);
-      log('Decodificado '+name+'.'+ext,'ok');return {mode:'buffer',buffer:b,url};
-    }catch(e){log('Fallo decode '+name+': '+(e.message||e),'warn');}
-  }return null;
+      const r=await fetch(url,{cache:'no-store'}); if(!r.ok){ log(`No encontrado ${url}`,'warn'); continue; }
+      const a=await r.arrayBuffer(); const b=await ctx().decodeAudioData(a);
+      log(`Decodificado ${name}.${ext}`,'ok'); return b;
+    }catch(e){ log(`Fallo decode ${name}.${ext}: ${(e&&e.message)||e}`,'warn'); }
+  }
+  throw new Error('No pude cargar '+name);
 }
-function makeLoopFromBuffer(buffer,gainStart=0){
-  const c=ctx();const src=c.createBufferSource();src.buffer=buffer;src.loop=true;
-  const g=c.createGain();g.gain.value=gainStart;src.connect(g).connect(ensureMaster());src.start();
-  return {type:'buffer',src,gain:g,media:null};
-}
-function makeLoopFromElement(name,gainStart=0){
-  const el=document.createElement('audio');el.loop=true;el.preload='auto';el.crossOrigin='anonymous';
-  el.innerHTML=`<source src="assets/${name}.wav"><source src="assets/${name}.mp3">`;
-  const c=ctx();const src=c.createMediaElementSource(el);const g=c.createGain();g.gain.value=gainStart;
-  src.connect(g).connect(ensureMaster());return {type:'element',src:el,gain:g,media:el};
-}
-async function loadLoopAny(name){
-  const dec=await tryDecode(name);if(dec&&dec.mode==='buffer')return makeLoopFromBuffer(dec.buffer,0);
-  log('Usando fallback <audio> para '+name,'warn');return makeLoopFromElement(name,0);
-}
-function gainOf(l){return l.gain.gain;}
+function makeLoop(buffer, gainStart=0){ const c=ctx(); const src=c.createBufferSource(); src.buffer=buffer; src.loop=true;
+  const g=c.createGain(); g.gain.value=gainStart; src.connect(g).connect(ensureMaster()); src.start(); return {src, gain:g}; }
+function trigOnce(buffer, vol=0.9){const c=ctx(); const s=c.createBufferSource(); const g=c.createGain(); g.gain.value=vol; s.buffer=buffer; s.connect(g).connect(ensureMaster()); s.start(0);}
 
 const LOOPS=['breath_drone_base','breath_air_noise','sub_pulse_loop','texture_hiss_loop','kinetic_click_loop','kinetic_foley_loop'];
 const GRAINS=['choir_grain_01','choir_grain_02','choir_grain_03','choir_grain_04'];
-const LEVELS={breath_drone_base:.38,breath_air_noise:.16,sub_pulse_loop:.32,texture_hiss_loop:.12,kinetic_click_loop:.20,kinetic_foley_loop:0};
-let loops={},grains={},audioReady=false,present=false;
+const LEVELS={breath_drone_base:.36,breath_air_noise:.14,sub_pulse_loop:.30,texture_hiss_loop:.10,kinetic_click_loop:.18,kinetic_foley_loop:0};
 
-function ensurePlayElements(){
-  for(const n of Object.keys(loops)){
-    const L=loops[n];if(L&&L.type==='element'&&L.media){
-      const el=L.media;
-      if(el.readyState>=2){el.muted=false;el.play().catch(()=>{});}
-      else el.addEventListener('canplay',()=>{el.muted=false;el.play().catch(()=>{});},{once:true});
-      try{el.load();}catch{}
-    }
+let loops={}, grains={}, audioReady=false, present=false;
+
+async function loadAllAudio(){
+  log('Cargando audio…','warn');
+  const bufs = await Promise.all(LOOPS.map(n=>loadBuffer(n)));
+  LOOPS.forEach((n,i)=>{ loops[n] = makeLoop(bufs[i], 0); });
+  const gbufs = await Promise.all(GRAINS.map(n=>loadBuffer(n).catch(()=>null)));
+  GRAINS.forEach((n,i)=>{ if(gbufs[i]) grains[n]=gbufs[i]; });
+  audioReady=true; log('Audio listo ✅','ok');
+
+  // si ya estás presente cuando termina de cargar → sube niveles ahora
+  if (present){
+    for(const n in LEVELS) ramp(loops[n].gain.gain, LEVELS[n], 0.6);
+    ramp(ensureMaster().gain, 0.9, 0.6);
   }
 }
-function ramp(p,v,t=0.4){const c=ctx();const n=c.currentTime;p.cancelScheduledValues(n);p.setValueAtTime(p.value,n);p.linearRampToValueAtTime(v,n+t);}
-function trig(b,v=0.9){const c=ctx();const s=c.createBufferSource();const g=c.createGain();g.gain.value=v;s.buffer=b;s.connect(g).connect(ensureMaster());s.start(0);s.stop(c.currentTime+(b.duration||3));}
 
-async function loadGrain(name){const d=await tryDecode(name);if(d&&d.mode==='buffer')return d.buffer;return null;}
-function loadAllAudioAfterCamera(){
-  Promise.all(LOOPS.map(n=>loadLoopAny(n)))
-    .then(res=>{LOOPS.forEach((n,i)=>loops[n]=res[i]);ensurePlayElements();})
-    .then(()=>Promise.all(GRAINS.map(n=>loadGrain(n).catch(()=>null))))
-    .then(gb=>{GRAINS.forEach((n,i)=>{if(gb[i])grains[n]=gb[i];});audioReady=true;log('Audio listo ✅','ok');
-      if(present){ensurePlayElements();for(const n in LEVELS)ramp(gainOf(loops[n]),LEVELS[n],.6);ramp(ensureMaster().gain,.9,.6);}
-    })
-    .catch(e=>log('Audio err: '+(e.message||e),'err'));
-}
-
-// Texto
+// —— Texto ——
 const PHRASES=[
  "has sido un torito bravo durante {{t}} segundos.",
  "Los sueños caen del cielo.",
@@ -146,62 +128,123 @@ const PHRASES=[
 ];
 let textTimer=null,presentStart=0,phraseIndex=0;
 function renderPhrase(){const tSec=Math.floor((performance.now()-presentStart)/1000);
-textEl.textContent=PHRASES[phraseIndex%PHRASES.length].replace(/\{\{\s*t\s*\}\}/g,tSec);phraseIndex++;}
-function startText(){if(textTimer)return;renderPhrase();textTimer=setInterval(renderPhrase,9000);}
-function stopText(){if(textTimer){clearInterval(textTimer);textTimer=null;}}
+  textEl.textContent=PHRASES[phraseIndex%PHRASES.length].replace(/\{\{\s*t\s*\}\}/g,tSec); phraseIndex++; }
+function startText(){ if(textTimer) return; renderPhrase(); textTimer=setInterval(renderPhrase,9000); }
+function stopText(){ if(textTimer){ clearInterval(textTimer); textTimer=null; } }
 
-// Visual/gestos
-let faceMesh,lastSeen=0,seen=0,browsEMA=0,browBase=0,browFrames=0,browCal=false,browsUp=false,mouthEMA=0,mouthOpen=false,lastNose=null,motionEMA=0;
-const N=1,C=152,MT=13,MB=14,LE=159,RE=386;const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y),lerp=(a,b,t)=>a+(b-a)*t;
-function bg(t,m){const w=canvas.width=stage.clientWidth*2,h=canvas.height=stage.clientHeight*2,cx=ctx2d;
-const cn=(Math.sin(t*0.0006)+1)/2,M=Math.min(1,m*2);
-const hue=(210+70*cn+80*M)%360,sat=20+40*M,lit=12+22*cn+16*M;
-const grd=cx.createRadialGradient(w*.5,h*(.36+.10*M),w*.08,w*.5,h*.60,Math.max(w,h)*.8);
-grd.addColorStop(0,`hsla(${hue},${sat+18}%,${Math.min(94,lit+28)}%,${.18+.24*M})`);
-grd.addColorStop(1,`hsla(${(hue+180)%360},${sat}%,${Math.max(7,lit-4)}%,${.95})`);
-cx.fillStyle=grd;cx.fillRect(0,0,w,h);
-textEl.style.filter=`blur(${(M*1.8).toFixed(2)}px)`;}
-function onResults(r){const f=r&&r.multiFaceLandmarks&&r.multiFaceLandmarks[0];if(f){seen++;lastSeen=performance.now();
-const s=dist(f[N],f[C]),nose=f[N];if(lastNose){const d=Math.hypot(nose.x-lastNose.x,nose.y-lastNose.y);motionEMA=motionEMA*.85+d*.15;}
-lastNose={x:nose.x,y:nose.y};
-const browY=(f[10].y+f[67].y+f[297].y)/3,eyeY=(f[LE].y+f[RE].y)/2;
-const browLift=(eyeY-browY)/s;browsEMA=lerp(browsEMA,browLift,.25);
-if(!browCal){browBase+=browsEMA;browFrames++;if(browFrames>70){browBase/=browFrames;browCal=true;log('Cejas calibradas ✅','ok');}}
-const dlt=browsEMA-browBase;if(!browsUp&&dlt>0.12){browsUp=true;const gKeys=Object.keys(grains);if(gKeys.length)trig(grains[gKeys[Math.floor(Math.random()*gKeys.length)]],.85);}if(browsUp&&dlt<0.08)browsUp=false;
-const mD=dist(f[MT],f[MB])/s;mouthEMA=lerp(mouthEMA,mD,.35);const mO=mouthEMA>0.34;if(mO!==mouthOpen){mouthOpen=mO;if(audioReady)ramp(gainOf(loops['kinetic_foley_loop']),mO?.32:0,.2);}
-if(!present&&seen>=6){present=true;setPresence(true);}}
-else{seen=0;if(present&&(performance.now()-lastSeen)>900){present=false;setPresence(false);}}bg(performance.now(),motionEMA);
-metersEl.textContent=`browΔ:${(browsEMA-browBase).toFixed(3)}·mouth:${mouthEMA.toFixed(3)}`;}
+// —— Visual + gestos (MediaPipe) ——
+let faceMesh, lastSeen=0, seen=0, browsEMA=0, browBase=0, browFrames=0, browCal=false, browsUp=false, mouthEMA=0, mouthOpen=false, lastNose=null, motionEMA=0;
+const N=1,C=152,MT=13,MB=14,LE=159,RE=386;
+const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y), lerp=(a,b,t)=>a+(b-a)*t;
+
+function bg(t,m){
+  const w=canvas.width=stage.clientWidth*2, h=canvas.height=stage.clientHeight*2, cx=ctx2d;
+  const cn=(Math.sin(t*0.0006)+1)/2, M=Math.min(1,m*2);
+  const hue=(210+70*cn+80*M)%360, sat=20+40*M, lit=12+22*cn+16*M;
+  const grd=cx.createRadialGradient(w*.5,h*(.36+.10*M),w*.08,w*.5,h*.60,Math.max(w,h)*.8);
+  grd.addColorStop(0,`hsla(${hue},${sat+18}%,${Math.min(94,lit+28)}%,${.18+.24*M})`);
+  grd.addColorStop(1,`hsla(${(hue+180)%360},${sat}%,${Math.max(7,lit-4)}%,${.95})`);
+  cx.fillStyle=grd; cx.fillRect(0,0,w,h);
+  textEl.style.filter=`blur(${(M*1.6).toFixed(2)}px)`;
+}
+
+function onResults(r){
+  const t=performance.now();
+  const f=r&&r.multiFaceLandmarks&&r.multiFaceLandmarks[0];
+  if(f){
+    seen++; lastSeen=t;
+    const s=dist(f[N],f[C]), nose=f[N];
+    if(lastNose){ const d=Math.hypot(nose.x-lastNose.x,nose.y-lastNose.y); motionEMA = motionEMA*0.85 + d*0.15; }
+    lastNose={x:nose.x,y:nose.y};
+
+    const browY=(f[10].y+f[67].y+f[297].y)/3, eyeY=(f[LE].y+f[RE].y)/2;
+    const browLift=(eyeY-browY)/s; browsEMA=lerp(browsEMA,browLift,0.25);
+    if(!browCal){ browBase+=browsEMA; browFrames++; if(browFrames>70){browBase/=browFrames; browCal=true; log('Cejas calibradas ✅','ok'); }}
+    const dlt=browsEMA-browBase;
+    if(!browsUp && dlt>0.12){ browsUp=true; const ks=Object.keys(grains); if(ks.length) trigOnce(grains[ks[Math.floor(Math.random()*ks.length)]], .85); }
+    if(browsUp && dlt<0.08){ browsUp=false; }
+
+    const mD=dist(f[MT],f[MB])/s; mouthEMA=lerp(mouthEMA,mD,0.35);
+    const mO = mouthEMA>0.34;
+    if(mO!==mouthOpen){ mouthOpen=mO; if(audioReady) ramp(loops['kinetic_foley_loop'].gain.gain, mO?0.32:0.0, 0.2); }
+
+    if(!present && seen>=6){ present=true; setPresence(true); }
+  }else{
+    seen=0; if(present && (performance.now()-lastSeen)>900){ present=false; setPresence(false); }
+  }
+  bg(performance.now(), motionEMA);
+  metersEl.textContent=`browΔ: ${(browsEMA-browBase).toFixed(3)} · mouth: ${mouthEMA.toFixed(3)}`;
+}
 
 function setPresence(on){
-stateEl.textContent='estado: '+(on?'presente':'ausente');
-if(on){ensurePlayElements();ramp(ensureMaster().gain,.9,.6);if(audioReady){for(const n in LEVELS)ramp(gainOf(loops[n]),LEVELS[n],.7);}
-presentStart=performance.now();textEl.classList.add('show');startText();}
-else{if(audioReady){for(const n in LEVELS)ramp(gainOf(loops[n]),0,.7);}ramp(ensureMaster().gain,0,.7);stopText();textEl.classList.remove('show');}
+  stateEl.textContent='estado: ' + (on?'presente':'ausente');
+  if(on){
+    ramp(ensureMaster().gain, 0.9, 0.6);
+    if(audioReady){ for(const n in LEVELS) ramp(loops[n].gain.gain, LEVELS[n], 0.7); }
+    presentStart=performance.now(); textEl.classList.add('show'); startText();
+  }else{
+    if(audioReady){ for(const n in LEVELS) ramp(loops[n].gain.gain, 0.0, 0.7); }
+    ramp(ensureMaster().gain, 0.0, 0.7);
+    stopText(); textEl.classList.remove('show');
+  }
 }
 
-// Inicio iPhone
-function resetStartingFlagSoon(){setTimeout(()=>window.__starting__=false,4000);}
-function userStart(){
-  if(window.__starting__)return;window.__starting__=true;resetStartingFlagSoon();
+// —— START (Chrome simple) ——
+async function startChrome(){
   try{
-    ctx();ensureMaster();silentClick();actx.resume().catch(()=>{});
-    log('AudioContext: '+actx.state,actx.state==='running'?'ok':'warn');
-    cta.textContent='Pidiendo permisos...';
-    navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:720},height:{ideal:1280}},audio:false})
-    .then(stream=>{
-      video.srcObject=stream;video.muted=true;video.play();ovl.style.display='none';
-      const fm=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`});
-      fm.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:0.6,minTrackingConfidence:0.6});
-      fm.onResults(onResults);
-      new Camera(video,{onFrame:async()=>{await fm.send({image:video});}}).start();
-      loadAllAudioAfterCamera();
-      setPresence(false);log('Sistema listo ✅','ok');window.__starting__=false;
-    })
-    .catch(e=>{log('Error cámara: '+(e.message||e),'err');window.__starting__=false;});
-  }catch(e){log('Error: '+(e.message||e),'err');window.__starting__=false;}
+    // desbloqueo de audio en el mismo gesto
+    ctx(); ensureMaster();
+    await actx.resume(); log('AudioContext: '+actx.state, 'ok');
+
+    // pedir cámara
+    log('Pidiendo cámara…','warn');
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:'user', width:{ideal:720}, height:{ideal:1280}}, audio:false
+    });
+    video.srcObject=stream; await video.play();
+    ovl.style.display='none'; log('Cámara OK ✅','ok');
+
+    // arrancar FaceMesh
+    faceMesh=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`});
+    faceMesh.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:0.6,minTrackingConfidence:0.6});
+    faceMesh.onResults(onResults);
+    new Camera(video,{onFrame:async()=>{await faceMesh.send({image:video});}}).start();
+
+    // cargar audio (buffers)
+    await loadAllAudio();
+
+    setPresence(false);
+    log('Sistema listo ✅ · mira a cámara','ok');
+  }catch(e){
+    log('Error start: '+(e?.message||e),'err');
+    ovl.style.display='flex';
+    cta.textContent='Reintentar';
+  }
 }
+
+// listeners
+ovl.addEventListener('click', startChrome);
+stage.addEventListener('click', (e)=>{ if(ovl.style.display!=='none') startChrome(); });
 
 // Tester
-document.getElementById('btnTest').addEventListener('click',()=>{ensurePlayElements();ramp(ensureMaster().gain,.9,.2);
-if(audioReady){for(const n in LEVELS)ramp(gainOf(loops[n]),LEVELS[n],.2
+document.getElementById('btnTest').addEventListener('click', ()=>{
+  if(!actx){ ctx(); ensureMaster(); }
+  actx.resume().catch(()=>{});
+  ramp(ensureMaster().gain, 0.9, 0.2);
+  if(audioReady){ for(const n in LEVELS) ramp(loops[n].gain.gain, LEVELS[n], 0.2); }
+  else log('Audios aún cargando…','warn');
+});
+document.getElementById('btnMute').addEventListener('click', ()=>{
+  if(audioReady){ for(const n in LEVELS) ramp(loops[n].gain.gain, 0.0, 0.2); }
+  if(masterGain) ramp(masterGain.gain, 0.0, 0.2);
+});
+document.getElementById('btnReload').addEventListener('click', async ()=>{
+  audioReady=false; loops={}; grains={};
+  await loadAllAudio();
+});
+
+bg(performance.now(), 0);
+log('Chrome listo. Tip: sube volumen y quita mute del SO 🔊','warn');
+</script>
+</body>
+</html>
