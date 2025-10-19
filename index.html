@@ -90,11 +90,38 @@ const LEVELS={breath_drone_base:.38,breath_air_noise:.16,sub_pulse_loop:.32,text
 
 function loadAllAudioAfterCamera(){
   // carga en segundo plano tras arrancar cámara (no bloquea el gesto)
-  Promise.all(LOOPS.map(n=>loadBuffer(n)))
-    .then(bufs=>{ LOOPS.forEach((n,i)=>loops[n]=makeLoop(bufs[i],0)); })
-    .then(()=>Promise.all(GRAINS.map(n=>loadBuffer(n).catch(()=>null))))
-    .then(gbufs=>{ GRAINS.forEach((n,i)=>{ if(gbufs[i]) grains[n]=gbufs[i]; }); audioReady=true; log('Audio listo ✅','ok'); })
-    .catch(e=>log('Audio err: '+(e.message||e),'err'));
+  Promise.all(LOOPS.map(n => loadBuffer(n)))
+    .then(bufs => {
+      LOOPS.forEach((n,i) => { loops[n] = makeLoop(bufs[i], 0); });
+    })
+    .then(() => Promise.all(GRAINS.map(n =>
+      loadBuffer(n).catch(err => {
+        log('No se cargó '+n+': '+(err?.message||err), 'warn');
+        return null;
+      })
+    )))
+    .then(gbufs => {
+      GRAINS.forEach((n,i) => { if (gbufs[i]) grains[n] = gbufs[i]; });
+      audioReady = true;
+      log('Audio listo ✅','ok');
+
+      // 👇 CLAVE: si ya hay rostro presente cuando termina de cargar, sube niveles ahora
+      if (present) {
+        for (const n in LEVELS) {
+          ramp(loops[n].gain.gain, LEVELS[n], 0.7);
+        }
+      }
+
+      // ping cortito para confirmar que el audio suena (un “pop” suave)
+      try {
+        const c = ctx();
+        const b = c.createBuffer(1, Math.max(1, c.sampleRate*0.03), c.sampleRate);
+        const s = c.createBufferSource(); s.buffer = b;
+        const g = c.createGain(); g.gain.value = 0.12;
+        s.connect(g).connect(c.destination); s.start(0);
+      } catch {}
+    })
+    .catch(e => log('Audio err: '+(e?.message||e), 'err'));
 }
 function setPresence(on){
   stateEl.textContent='estado: '+(on?'presente':'ausente');
