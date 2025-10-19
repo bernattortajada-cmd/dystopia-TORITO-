@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>PRESENCIA v7 — Chrome ready</title>
+<title>TORITO — gesto de cuernos</title>
 <style>
   :root{--bg:#0a0a0b;--fg:#e8e8ec}
   *{box-sizing:border-box}
@@ -12,30 +12,30 @@
   .wrap{min-height:100vh;display:grid;place-items:center;padding:16px}
   .stage{position:relative;width:min(94vw,560px);aspect-ratio:9/16;border-radius:20px;
     overflow:hidden;background:#000;box-shadow:0 18px 48px rgba(0,0,0,.5)}
-  video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);opacity:0.18}
+  video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);opacity:.18}
   canvas{position:absolute;inset:0;width:100%;height:100%}
   .overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-    background:rgba(0,0,0,.55);z-index:9;text-align:center}
+    background:rgba(0,0,0,.55);z-index:9;text-align:center;cursor:pointer}
   .cta{background:#ffffff12;border:1px solid #ffffff2d;color:#fff;padding:14px 18px;border-radius:14px;
-    font-size:16px;backdrop-filter:blur(6px);cursor:pointer}
-  .hud{position:absolute;left:10px;right:10px;bottom:44px;display:flex;justify-content:space-between;
-    font-size:12px;opacity:.9;mix-blend-mode:screen}
+    font-size:16px;backdrop-filter:blur(6px)}
+  .hud{position:absolute;left:10px;right:10px;bottom:10px;display:flex;justify-content:space-between;font-size:12px;opacity:.9}
   .pill{border:1px solid #2c2c30;background:#141417;padding:6px 10px;border-radius:999px}
   .log{max-width:560px;width:100%;margin-top:12px;background:#0e0e11;border:1px solid #26262b;border-radius:12px;
     padding:10px;font-size:12px;line-height:1.35;white-space:pre-wrap}
   .ok{color:#9BEF8A}.warn{color:#FFD166}.err{color:#FF6B6B}
 
-  /* Texto Times que “respira” */
-  #textOverlay{position:absolute;inset:auto 12px 92px 12px;text-align:center;
-    font-family:"Times New Roman", Times, serif;font-size:16px;line-height:1.5;color:#f0f0f4;
-    opacity:0;transform:translateY(6px);transition:opacity .6s ease,transform .6s ease,filter .2s ease;
-    pointer-events:none;mix-blend-mode:screen;text-shadow:0 1px 0 rgba(0,0,0,.25)}
-  #textOverlay.show{opacity:1;transform:translateY(0);animation:breathe 5s ease-in-out infinite}
-  @keyframes breathe{0%,100%{opacity:.9;transform:translateY(2px)}50%{opacity:1;transform:translateY(-2px)}}
-
-  /* Botones de test (puedes borrarlos luego) */
-  .tester{position:absolute;left:10px;right:10px;bottom:6px;display:flex;gap:8px;justify-content:center;z-index:10}
-  .btn{background:#ffffff12;border:1px solid #ffffff2d;color:#fff;padding:8px 10px;border-radius:12px;font-size:12px;cursor:pointer}
+  /* Texto multi-fuente */
+  #toritoText{
+    position:absolute;inset:auto 12px 64px 12px;display:flex;gap:2px;justify-content:center;flex-wrap:wrap;
+    opacity:0;transform:translateY(6px);transition:opacity .5s ease, transform .5s ease;
+    mix-blend-mode:screen;text-shadow:0 1px 0 rgba(0,0,0,.25)
+  }
+  #toritoText.show{opacity:1;transform:translateY(0);animation:breathe 4.2s ease-in-out infinite}
+  .char{
+    font-size:20px;line-height:1.2;color:#f0f0f4;display:inline-block;
+    transform:translateY(0);transition:transform .3s ease;
+  }
+  @keyframes breathe{0%,100%{transform:translateY(0)}50%{transform:translateY(-2px)}}
 </style>
 </head>
 <body>
@@ -44,207 +44,221 @@
     <video id="cam" playsinline autoplay muted></video>
     <canvas id="viz"></canvas>
 
-    <!-- Overlay de inicio -->
-    <div class="overlay" id="ovl"><div class="cta" id="cta">Toca para activar cámara + audio</div></div>
+    <div class="overlay" id="ovl"><div class="cta">Toca para activar cámara + audio</div></div>
 
-    <!-- HUD -->
     <div class="hud">
       <div class="pill" id="state">estado: idle</div>
-      <div class="pill" id="meters">browΔ: - · mouth: -</div>
+      <div class="pill" id="meters">cuernos: —</div>
     </div>
 
-    <!-- Texto -->
-    <div id="textOverlay"></div>
-
-    <!-- Tester -->
-    <div class="tester">
-      <button class="btn" id="btnTest">🔊 Probar audio</button>
-      <button class="btn" id="btnMute">🔇 Mute</button>
-      <button class="btn" id="btnReload">↻ Recargar audio</button>
-    </div>
+    <!-- Texto con letras de múltiples tipografías -->
+    <div id="toritoText" aria-hidden="true"></div>
   </div>
   <div class="log" id="log"></div>
 </div>
 
-<!-- MediaPipe -->
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js"></script>
+<!-- MediaPipe Holistic -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5/holistic.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
+
 <script>
-/* PRESENCIA v7 — Chrome-ready: flujo simple, WebAudio buffers, masterGain, logs claros */
+/* === util de log === */
 const logEl=document.getElementById('log');
 function log(m,c=''){const d=document.createElement('div');d.className=c;d.textContent=m;logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight;}
 
-const video=document.getElementById('cam'), canvas=document.getElementById('viz'), ctx2d=canvas.getContext('2d');
-const ovl=document.getElementById('ovl'), cta=document.getElementById('cta'), stage=document.getElementById('stage');
-const stateEl=document.getElementById('state'), metersEl=document.getElementById('meters'), textEl=document.getElementById('textOverlay');
+/* === elementos === */
+const video=document.getElementById('cam');
+const canvas=document.getElementById('viz');
+const ctx2d=canvas.getContext('2d');
+const stage=document.getElementById('stage');
+const ovl=document.getElementById('ovl');
+const stateEl=document.getElementById('state');
+const metersEl=document.getElementById('meters');
+const textWrap=document.getElementById('toritoText');
 
-let actx, masterGain;
-function ctx(){return actx||(actx=new (window.AudioContext||window.webkitAudioContext)());}
-function ensureMaster(){const c=ctx(); if(!masterGain){ masterGain=c.createGain(); masterGain.gain.value=0.0; masterGain.connect(c.destination);} return masterGain;}
-function ramp(param,to,t=0.35){const c=ctx(); const n=c.currentTime; param.cancelScheduledValues(n); param.setValueAtTime(param.value,n); param.linearRampToValueAtTime(to,n+t);}
-
-async function loadBuffer(name){
-  // Chrome decodifica muy bien WAV/MP3; intentamos WAV y luego MP3
-  for(const ext of ['wav','mp3']){
-    const url=`assets/${name}.${ext}`;
-    try{
-      const r=await fetch(url,{cache:'no-store'}); if(!r.ok){ log(`No encontrado ${url}`,'warn'); continue; }
-      const a=await r.arrayBuffer(); const b=await ctx().decodeAudioData(a);
-      log(`Decodificado ${name}.${ext}`,'ok'); return b;
-    }catch(e){ log(`Fallo decode ${name}.${ext}: ${(e&&e.message)||e}`,'warn'); }
-  }
-  throw new Error('No pude cargar '+name);
-}
-function makeLoop(buffer, gainStart=0){ const c=ctx(); const src=c.createBufferSource(); src.buffer=buffer; src.loop=true;
-  const g=c.createGain(); g.gain.value=gainStart; src.connect(g).connect(ensureMaster()); src.start(); return {src, gain:g}; }
-function trigOnce(buffer, vol=0.9){const c=ctx(); const s=c.createBufferSource(); const g=c.createGain(); g.gain.value=vol; s.buffer=buffer; s.connect(g).connect(ensureMaster()); s.start(0);}
-
-const LOOPS=['breath_drone_base','breath_air_noise','sub_pulse_loop','texture_hiss_loop','kinetic_click_loop','kinetic_foley_loop'];
-const GRAINS=['choir_grain_01','choir_grain_02','choir_grain_03','choir_grain_04'];
-const LEVELS={breath_drone_base:.36,breath_air_noise:.14,sub_pulse_loop:.30,texture_hiss_loop:.10,kinetic_click_loop:.18,kinetic_foley_loop:0};
-
-let loops={}, grains={}, audioReady=false, present=false;
-
-async function loadAllAudio(){
-  log('Cargando audio…','warn');
-  const bufs = await Promise.all(LOOPS.map(n=>loadBuffer(n)));
-  LOOPS.forEach((n,i)=>{ loops[n] = makeLoop(bufs[i], 0); });
-  const gbufs = await Promise.all(GRAINS.map(n=>loadBuffer(n).catch(()=>null)));
-  GRAINS.forEach((n,i)=>{ if(gbufs[i]) grains[n]=gbufs[i]; });
-  audioReady=true; log('Audio listo ✅','ok');
-
-  // si ya estás presente cuando termina de cargar → sube niveles ahora
-  if (present){
-    for(const n in LEVELS) ramp(loops[n].gain.gain, LEVELS[n], 0.6);
-    ramp(ensureMaster().gain, 0.9, 0.6);
-  }
-}
-
-// —— Texto ——
-const PHRASES=[
- "has sido un torito bravo durante {{t}} segundos.",
- "Los sueños caen del cielo.",
- "cierro los ojos, cuando los abro, salen modelos de los cuadros."
+/* === texto multi-fuente === */
+const phrase = "soy un torito bravo";
+const fonts = [
+  'Arial, sans-serif',
+  'Helvetica, Arial, sans-serif',
+  '"Times New Roman", Times, serif',
+  'Georgia, serif',
+  '"Courier New", Courier, monospace',
+  'Verdana, Geneva, sans-serif',
+  '"Trebuchet MS", Arial, sans-serif',
+  'Garamond, serif',
+  'Palatino, "Palatino Linotype", serif',
+  '"Lucida Sans Unicode","Lucida Grande", sans-serif',
+  'Impact, Charcoal, sans-serif'
 ];
-let textTimer=null,presentStart=0,phraseIndex=0;
-function renderPhrase(){const tSec=Math.floor((performance.now()-presentStart)/1000);
-  textEl.textContent=PHRASES[phraseIndex%PHRASES.length].replace(/\{\{\s*t\s*\}\}/g,tSec); phraseIndex++; }
-function startText(){ if(textTimer) return; renderPhrase(); textTimer=setInterval(renderPhrase,9000); }
-function stopText(){ if(textTimer){ clearInterval(textTimer); textTimer=null; } }
+function buildText(){
+  textWrap.innerHTML='';
+  let i=0;
+  for(const ch of phrase){
+    const span=document.createElement('span');
+    span.className='char';
+    span.style.fontFamily=fonts[i % fonts.length];
+    span.textContent=ch;
+    textWrap.appendChild(span);
+    i++;
+  }
+}
+buildText();
 
-// —— Visual + gestos (MediaPipe) ——
-let faceMesh, lastSeen=0, seen=0, browsEMA=0, browBase=0, browFrames=0, browCal=false, browsUp=false, mouthEMA=0, mouthOpen=false, lastNose=null, motionEMA=0;
-const N=1,C=152,MT=13,MB=14,LE=159,RE=386;
-const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y), lerp=(a,b,t)=>a+(b-a)*t;
+/* === audio (un solo loop) === */
+let actx, masterGain, loopNode=null, loopGain=null, audioReady=false;
+function ctx(){return actx||(actx=new (window.AudioContext||window.webkitAudioContext)());}
+function ensureMaster(){
+  const c=ctx();
+  if(!masterGain){masterGain=c.createGain();masterGain.gain.value=0;masterGain.connect(c.destination);}
+  return masterGain;
+}
+async function loadTorito(){
+  for(const ext of ['wav','mp3']){
+    try{
+      const r=await fetch(`assets/torito_vocal.${ext}`,{cache:'no-store'});
+      if(!r.ok) continue;
+      const a=await r.arrayBuffer();
+      const b=await ctx().decodeAudioData(a);
+      const src=ctx().createBufferSource(); src.buffer=b; src.loop=true;
+      loopGain=ctx().createGain(); loopGain.gain.value=0;
+      src.connect(loopGain).connect(ensureMaster()); src.start();
+      loopNode=src; audioReady=true; log('Audio cargado: torito_vocal.'+ext,'ok');
+      return;
+    }catch(e){ log('Decode falló ('+ext+'): '+(e.message||e),'warn'); }
+  }
+  throw new Error('No pude cargar torito_vocal (.wav/.mp3)');
+}
+function ramp(param,to,t=0.30){const c=ctx();const n=c.currentTime;param.cancelScheduledValues(n);param.setValueAtTime(param.value,n);param.linearRampToValueAtTime(to,n+t);}
 
-function bg(t,m){
-  const w=canvas.width=stage.clientWidth*2, h=canvas.height=stage.clientHeight*2, cx=ctx2d;
-  const cn=(Math.sin(t*0.0006)+1)/2, M=Math.min(1,m*2);
-  const hue=(210+70*cn+80*M)%360, sat=20+40*M, lit=12+22*cn+16*M;
-  const grd=cx.createRadialGradient(w*.5,h*(.36+.10*M),w*.08,w*.5,h*.60,Math.max(w,h)*.8);
-  grd.addColorStop(0,`hsla(${hue},${sat+18}%,${Math.min(94,lit+28)}%,${.18+.24*M})`);
-  grd.addColorStop(1,`hsla(${(hue+180)%360},${sat}%,${Math.max(7,lit-4)}%,${.95})`);
+/* === visual bg (suave) === */
+function drawBG(){
+  const w=canvas.width=stage.clientWidth*2,h=canvas.height=stage.clientHeight*2;
+  const cx=ctx2d;
+  const grd=cx.createRadialGradient(w*.5,h*.38,w*.08,w*.5,h*.62,Math.max(w,h)*.8);
+  grd.addColorStop(0,'hsla(210,38%,70%,.22)');
+  grd.addColorStop(1,'hsla(300,18%,10%,.95)');
   cx.fillStyle=grd; cx.fillRect(0,0,w,h);
-  textEl.style.filter=`blur(${(M*1.6).toFixed(2)}px)`;
 }
 
-function onResults(r){
-  const t=performance.now();
-  const f=r&&r.multiFaceLandmarks&&r.multiFaceLandmarks[0];
-  if(f){
-    seen++; lastSeen=t;
-    const s=dist(f[N],f[C]), nose=f[N];
-    if(lastNose){ const d=Math.hypot(nose.x-lastNose.x,nose.y-lastNose.y); motionEMA = motionEMA*0.85 + d*0.15; }
-    lastNose={x:nose.x,y:nose.y};
+/* === detección gesto "cuernos" con Holistic ===
+   Regla: ambas puntas de índice (8) por encima de los ojos y a izquierda/derecha de la cabeza.
+   Además, vector (PIP6 → TIP8) apuntando hacia arriba (dy negativo dominante).
+*/
+let holistic, started=false, horns=false, hornFrames=0, noHornFrames=0;
+const LM = {
+  NOSE:1, CHIN:152, EYE_L_TOP:159, EYE_R_TOP:386,
+  HAND_INDEX_TIP:8, HAND_INDEX_PIP:6
+};
 
-    const browY=(f[10].y+f[67].y+f[297].y)/3, eyeY=(f[LE].y+f[RE].y)/2;
-    const browLift=(eyeY-browY)/s; browsEMA=lerp(browsEMA,browLift,0.25);
-    if(!browCal){ browBase+=browsEMA; browFrames++; if(browFrames>70){browBase/=browFrames; browCal=true; log('Cejas calibradas ✅','ok'); }}
-    const dlt=browsEMA-browBase;
-    if(!browsUp && dlt>0.12){ browsUp=true; const ks=Object.keys(grains); if(ks.length) trigOnce(grains[ks[Math.floor(Math.random()*ks.length)]], .85); }
-    if(browsUp && dlt<0.08){ browsUp=false; }
+function isPointingUp(pip, tip){
+  if(!pip || !tip) return false;
+  const dx = tip.x - pip.x, dy = tip.y - pip.y;
+  return (dy < -Math.abs(dx)*0.6); // mayormente hacia arriba
+}
 
-    const mD=dist(f[MT],f[MB])/s; mouthEMA=lerp(mouthEMA,mD,0.35);
-    const mO = mouthEMA>0.34;
-    if(mO!==mouthOpen){ mouthOpen=mO; if(audioReady) ramp(loops['kinetic_foley_loop'].gain.gain, mO?0.32:0.0, 0.2); }
+function hornsHeuristic(res){
+  const face = res.faceLandmarks;
+  const left = res.leftHandLandmarks;
+  const right = res.rightHandLandmarks;
+  if(!face || !left || !right) return false;
 
-    if(!present && seen>=6){ present=true; setPresence(true); }
+  // escala de cabeza
+  const nose = face[LM.NOSE], chin = face[LM.CHIN];
+  const headScale = Math.hypot(nose.x-chin.x, nose.y-chin.y);
+  if(!headScale) return false;
+
+  // altura de ojos
+  const eyeY = (face[LM.EYE_L_TOP].y + face[LM.EYE_R_TOP].y)/2;
+
+  // índice izq / der
+  const li_tip = left[LM.HAND_INDEX_TIP], li_pip = left[LM.HAND_INDEX_PIP];
+  const ri_tip = right[LM.HAND_INDEX_TIP], ri_pip = right[LM.HAND_INDEX_PIP];
+  if(!li_tip || !ri_tip) return false;
+
+  // ambas puntas por encima de los ojos
+  const leftAbove = li_tip.y < eyeY - 0.02*headScale;
+  const rightAbove = ri_tip.y < eyeY - 0.02*headScale;
+
+  // posiciones laterales respecto a nariz (x de cámara espejo)
+  const leftSide  = li_tip.x > nose.x + 0.08*headScale;   // mano izquierda (en espejo) queda a la derecha
+  const rightSide = ri_tip.x < nose.x - 0.08*headScale;
+
+  // vector apuntando hacia arriba
+  const leftUp  = isPointingUp(li_pip, li_tip);
+  const rightUp = isPointingUp(ri_pip, ri_tip);
+
+  return leftAbove && rightAbove && leftSide && rightSide && leftUp && rightUp;
+}
+
+function onResults(res){
+  drawBG();
+
+  // gesto con histéresis
+  if(hornsHeuristic(res)){
+    hornFrames++; noHornFrames=0;
   }else{
-    seen=0; if(present && (performance.now()-lastSeen)>900){ present=false; setPresence(false); }
+    noHornFrames++; hornFrames=0;
   }
-  bg(performance.now(), motionEMA);
-  metersEl.textContent=`browΔ: ${(browsEMA-browBase).toFixed(3)} · mouth: ${mouthEMA.toFixed(3)}`;
+  // necesita mantenerse unos frames para evitar falsos positivos
+  const detected = hornFrames>5 ? true : (noHornFrames>6 ? false : horns);
+  if(detected !== horns){
+    horns = detected;
+    stateEl.textContent = 'estado: ' + (horns ? 'TORITO ON' : 'idle');
+    // audio + texto
+    if(audioReady && loopGain){
+      ramp(ensureMaster().gain, horns?0.95:0.0, 0.25);
+      ramp(loopGain.gain,       horns?0.85:0.0, 0.25);
+    }
+    textWrap.classList.toggle('show', horns);
+  }
+  metersEl.textContent = 'cuernos: ' + (horns ? 'sí' : 'no');
 }
 
-function setPresence(on){
-  stateEl.textContent='estado: ' + (on?'presente':'ausente');
-  if(on){
-    ramp(ensureMaster().gain, 0.9, 0.6);
-    if(audioReady){ for(const n in LEVELS) ramp(loops[n].gain.gain, LEVELS[n], 0.7); }
-    presentStart=performance.now(); textEl.classList.add('show'); startText();
-  }else{
-    if(audioReady){ for(const n in LEVELS) ramp(loops[n].gain.gain, 0.0, 0.7); }
-    ramp(ensureMaster().gain, 0.0, 0.7);
-    stopText(); textEl.classList.remove('show');
-  }
-}
-
-// —— START (Chrome simple) ——
-async function startChrome(){
+/* === start === */
+async function start(){
+  if(started) return; started=true;
   try{
-    // desbloqueo de audio en el mismo gesto
-    ctx(); ensureMaster();
-    await actx.resume(); log('AudioContext: '+actx.state, 'ok');
+    // audio primero (mismo gesto)
+    ctx(); ensureMaster(); await actx.resume();
 
-    // pedir cámara
-    log('Pidiendo cámara…','warn');
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video:{facingMode:'user', width:{ideal:720}, height:{ideal:1280}}, audio:false
+    // preparar audio (arranca en silencio)
+    await loadTorito();
+
+    // cámara
+    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:720},height:{ideal:1280}},audio:false});
+    video.srcObject=stream; await video.play(); ovl.style.display='none'; log('Cámara OK ✅','ok');
+
+    // Holistic
+    holistic = new Holistic({locateFile:(f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5/${f}`});
+    holistic.setOptions({
+      modelComplexity: 1,
+      smoothLandmarks: true,
+      refineFaceLandmarks: true,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6
     });
-    video.srcObject=stream; await video.play();
-    ovl.style.display='none'; log('Cámara OK ✅','ok');
+    holistic.onResults(onResults);
 
-    // arrancar FaceMesh
-    faceMesh=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`});
-    faceMesh.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:0.6,minTrackingConfidence:0.6});
-    faceMesh.onResults(onResults);
-    new Camera(video,{onFrame:async()=>{await faceMesh.send({image:video});}}).start();
+    // loop de frames
+    new Camera(video, { onFrame: async () => { await holistic.send({image: video}); } }).start();
 
-    // cargar audio (buffers)
-    await loadAllAudio();
-
-    setPresence(false);
-    log('Sistema listo ✅ · mira a cámara','ok');
+    stateEl.textContent='estado: idle';
+    log('Audio listo ✅ (esperando gesto de cuernos)','ok');
   }catch(e){
     log('Error start: '+(e?.message||e),'err');
     ovl.style.display='flex';
-    cta.textContent='Reintentar';
+    ovl.querySelector('.cta').textContent='Reintentar';
+    started=false;
   }
 }
 
-// listeners
-ovl.addEventListener('click', startChrome);
-stage.addEventListener('click', (e)=>{ if(ovl.style.display!=='none') startChrome(); });
+document.getElementById('ovl').addEventListener('click', start);
+stage.addEventListener('click', (e)=>{ if(ovl.style.display!=='none') start(); });
 
-// Tester
-document.getElementById('btnTest').addEventListener('click', ()=>{
-  if(!actx){ ctx(); ensureMaster(); }
-  actx.resume().catch(()=>{});
-  ramp(ensureMaster().gain, 0.9, 0.2);
-  if(audioReady){ for(const n in LEVELS) ramp(loops[n].gain.gain, LEVELS[n], 0.2); }
-  else log('Audios aún cargando…','warn');
-});
-document.getElementById('btnMute').addEventListener('click', ()=>{
-  if(audioReady){ for(const n in LEVELS) ramp(loops[n].gain.gain, 0.0, 0.2); }
-  if(masterGain) ramp(masterGain.gain, 0.0, 0.2);
-});
-document.getElementById('btnReload').addEventListener('click', async ()=>{
-  audioReady=false; loops={}; grains={};
-  await loadAllAudio();
-});
-
-bg(performance.now(), 0);
-log('Chrome listo. Tip: sube volumen y quita mute del SO 🔊','warn');
+// primer fondo
+drawBG();
+log('Tip: coloca ambas manos con los índices a modo “cuernos” por encima de la cabeza 🫰🐂','warn');
 </script>
 </body>
 </html>
