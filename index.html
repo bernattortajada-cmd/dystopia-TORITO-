@@ -4,7 +4,7 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
-<title>PRESENCIA v6 — iPhone-first start</title>
+<title>PRESENCIA v6.1 — iPhone audio fix + master gain + tester</title>
 <style>
   :root{--bg:#0a0a0b;--fg:#e8e8ec}
   *{box-sizing:border-box}
@@ -13,34 +13,32 @@
   .wrap{min-height:100vh;display:grid;place-items:center;padding:16px}
   .stage{position:relative;width:min(94vw,560px);aspect-ratio:9/16;border-radius:20px;
     overflow:hidden;background:#000;box-shadow:0 18px 48px rgba(0,0,0,.5)}
-  video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
-    transform:scaleX(-1);opacity:0.18}
+  video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);opacity:0.18}
   canvas{position:absolute;inset:0;width:100%;height:100%}
   .overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
     background:rgba(0,0,0,.55);z-index:9;cursor:pointer;text-align:center}
   .cta{background:#ffffff12;border:1px solid #ffffff2d;color:#fff;padding:14px 18px;border-radius:14px;
     font-size:16px;backdrop-filter:blur(6px)}
-  .hud{position:absolute;left:10px;right:10px;bottom:10px;display:flex;
-    justify-content:space-between;font-size:12px;opacity:.9;mix-blend-mode:screen}
+  .hud{position:absolute;left:10px;right:10px;bottom:44px;display:flex;justify-content:space-between;
+    font-size:12px;opacity:.9;mix-blend-mode:screen}
   .pill{border:1px solid #2c2c30;background:#141417;padding:6px 10px;border-radius:999px}
-  .log{max-width:560px;width:100%;margin-top:12px;background:#0e0e11;
-    border:1px solid #26262b;border-radius:12px;padding:10px;font-size:12px;line-height:1.35;white-space:pre-wrap}
+  .log{max-width:560px;width:100%;margin-top:12px;background:#0e0e11;border:1px solid #26262b;border-radius:12px;
+    padding:10px;font-size:12px;line-height:1.35;white-space:pre-wrap}
   .ok{color:#9BEF8A}.warn{color:#FFD166}.err{color:#FF6B6B}
 
-  /* Texto Times con respiración */
-  #textOverlay{
-    position:absolute;inset:auto 12px 64px 12px;text-align:center;
-    font-family:"Times New Roman", Times, serif;
-    font-size:16px; line-height:1.5;
-    color:#f0f0f4; opacity:0; transform:translateY(6px);
-    transition:opacity .6s ease,transform .6s ease, filter .2s ease;
-    pointer-events:none;mix-blend-mode:screen;text-shadow:0 1px 0 rgba(0,0,0,.25);
-  }
-  #textOverlay.show{opacity:1; transform:translateY(0); animation:breathe 6s ease-in-out infinite;}
-  @keyframes breathe{0%,100%{opacity:.9;transform:translateY(2px);}50%{opacity:1;transform:translateY(-2px);}}
+  /* Texto Times + respiración */
+  #textOverlay{position:absolute;inset:auto 12px 92px 12px;text-align:center;
+    font-family:"Times New Roman", Times, serif;font-size:16px;line-height:1.5;color:#f0f0f4;
+    opacity:0;transform:translateY(6px);transition:opacity .6s ease,transform .6s ease,filter .2s ease;
+    pointer-events:none;mix-blend-mode:screen;text-shadow:0 1px 0 rgba(0,0,0,.25)}
+  #textOverlay.show{opacity:1;transform:translateY(0);animation:breathe 6s ease-in-out infinite}
+  @keyframes breathe{0%,100%{opacity:.9;transform:translateY(2px)}50%{opacity:1;transform:translateY(-2px)}}
 
-  /* iOS: evitar selección/tap highlight */
-  .stage,.overlay,.cta{-webkit-user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;}
+  /* Tester flotante (temporal) */
+  .tester{position:absolute;left:10px;right:10px;bottom:6px;display:flex;gap:8px;justify-content:center;z-index:10}
+  .btn{background:#ffffff12;border:1px solid #ffffff2d;color:#fff;padding:8px 10px;border-radius:12px;font-size:12px}
+
+  .stage,.overlay,.cta{-webkit-user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
 </style>
 </head>
 <body>
@@ -54,6 +52,13 @@
       <div class="pill" id="meters">browΔ: - · mouth: -</div>
     </div>
     <div id="textOverlay"></div>
+
+    <!-- Tester -->
+    <div class="tester">
+      <button class="btn" id="btnTest">🔊 Probar audio</button>
+      <button class="btn" id="btnMute">🔇 Mute</button>
+      <button class="btn" id="btnReload">↻ Recargar audio</button>
+    </div>
   </div>
   <div class="log" id="log"></div>
 </div>
@@ -62,86 +67,112 @@
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
 <script>
-/* iPhone-first start: iniciamos AudioContext y getUserMedia dentro del MISMO gesto sin await previos */
+/* v6.1 audio iPhone: masterGain, post-load present ramp, tester */
 const logEl=document.getElementById('log'); const stateEl=document.getElementById('state'); const metersEl=document.getElementById('meters');
-function log(m,c=''){const d=document.createElement('div');d.className=c;d.textContent=m;logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight;}
-
 const video=document.getElementById('cam'), canvas=document.getElementById('viz'), ctx2d=canvas.getContext('2d'), ovl=document.getElementById('ovl'), cta=document.getElementById('cta'), stage=document.getElementById('stage');
 const textEl=document.getElementById('textOverlay');
+const btnTest=document.getElementById('btnTest'), btnMute=document.getElementById('btnMute'), btnReload=document.getElementById('btnReload');
+function log(m,c=''){const d=document.createElement('div');d.className=c;d.textContent=m;logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight;}
 
 let actx; function ctx(){return actx||(actx=new (window.AudioContext||window.webkitAudioContext)());}
 function silentClick(){const c=ctx();const o=c.createOscillator();const g=c.createGain();g.gain.value=0.0001;o.connect(g).connect(c.destination);o.start();o.stop(c.currentTime+0.05);}
 
+let masterGain;
+function ensureMaster(){
+  const c=ctx();
+  if (!masterGain){
+    masterGain=c.createGain();
+    masterGain.gain.value=0.0; // arranca mute
+    masterGain.connect(c.destination);
+  }
+  return masterGain;
+}
+
 async function loadBuffer(name){
   for(const ext of ['wav','mp3']){
-    try{const r=await fetch(`assets/${name}.${ext}`,{cache:'no-store'}); if(r.ok){const a=await r.arrayBuffer(); return await ctx().decodeAudioData(a);}}
-    catch(e){}
+    try{
+      const r=await fetch(`assets/${name}.${ext}`,{cache:'no-store'});
+      if(r.ok){
+        const a=await r.arrayBuffer();
+        const b=await ctx().decodeAudioData(a);
+        log(`Cargado ${name}.${ext}`,'ok');
+        return b;
+      } else {
+        log(`No encontrado ${name}.${ext}`,'warn');
+      }
+    }catch(e){ log(`Error cargando ${name}.${ext}: ${(e&&e.message)||e}`,'warn'); }
   }
   throw new Error('No pude cargar '+name);
 }
-function makeLoop(b,v=0){const c=ctx();const s=c.createBufferSource();s.buffer=b;s.loop=true;const g=c.createGain();g.gain.value=v;s.connect(g).connect(c.destination);s.start();return{src:s,gain:g};}
-function ramp(p,v,t=0.4){const c=ctx();const n=c.currentTime;p.cancelScheduledValues(n);p.setValueAtTime(p.value,n);p.linearRampToValueAtTime(v,n+t);}
-function trig(b,v=0.9){const c=ctx();const s=c.createBufferSource();const g=c.createGain();g.gain.value=v;s.buffer=b;s.connect(g).connect(c.destination);s.start();s.stop(c.currentTime+(b.duration||3));}
+
+function makeLoop(buffer, gainStart=0){
+  const c=ctx();
+  const src=c.createBufferSource(); src.buffer=buffer; src.loop=true;
+  const g=c.createGain(); g.gain.value=gainStart;
+  src.connect(g).connect(ensureMaster());
+  src.start();
+  return {src, gain:g};
+}
+function ramp(param, to, t=0.4){const c=ctx();const n=c.currentTime;param.cancelScheduledValues(n);param.setValueAtTime(param.value,n);param.linearRampToValueAtTime(to,n+t);}
+function trig(buffer, vol=0.9){
+  const c=ctx(); const s=c.createBufferSource(); const g=c.createGain(); g.gain.value=vol;
+  s.buffer=buffer; s.connect(g).connect(ensureMaster()); s.start(0); s.stop(c.currentTime+(buffer.duration||3));
+}
 
 const LOOPS=['breath_drone_base','breath_air_noise','sub_pulse_loop','texture_hiss_loop','kinetic_click_loop','kinetic_foley_loop'];
 const GRAINS=['choir_grain_01','choir_grain_02','choir_grain_03','choir_grain_04'];
-let loops={},grains={},audioReady=false;
+let loops={}, grains={}, audioReady=false;
 const LEVELS={breath_drone_base:.38,breath_air_noise:.16,sub_pulse_loop:.32,texture_hiss_loop:.12,kinetic_click_loop:.20,kinetic_foley_loop:0};
 
 function loadAllAudioAfterCamera(){
-  // carga en segundo plano tras arrancar cámara (no bloquea el gesto)
-  Promise.all(LOOPS.map(n => loadBuffer(n)))
-    .then(bufs => {
-      LOOPS.forEach((n,i) => { loops[n] = makeLoop(bufs[i], 0); });
-    })
-    .then(() => Promise.all(GRAINS.map(n =>
-      loadBuffer(n).catch(err => {
-        log('No se cargó '+n+': '+(err?.message||err), 'warn');
-        return null;
-      })
-    )))
-    .then(gbufs => {
-      GRAINS.forEach((n,i) => { if (gbufs[i]) grains[n] = gbufs[i]; });
-      audioReady = true;
-      log('Audio listo ✅','ok');
+  Promise.all(LOOPS.map(n=>loadBuffer(n)))
+    .then(bufs=>{ LOOPS.forEach((n,i)=>{ loops[n]=makeLoop(bufs[i],0); }); })
+    .then(()=>Promise.all(GRAINS.map(n=>loadBuffer(n).catch(()=>null))))
+    .then(gbufs=>{
+      GRAINS.forEach((n,i)=>{ if(gbufs[i]) grains[n]=gbufs[i]; });
+      audioReady=true; log('Audio listo ✅','ok');
 
-      // 👇 CLAVE: si ya hay rostro presente cuando termina de cargar, sube niveles ahora
-      if (present) {
-        for (const n in LEVELS) {
-          ramp(loops[n].gain.gain, LEVELS[n], 0.7);
-        }
+      // si ya estás presente cuando termina de cargar → sube niveles y master
+      if (present){
+        for (const n in LEVELS){ ramp(loops[n].gain.gain, LEVELS[n], 0.6); }
+        ramp(ensureMaster().gain, 0.9, 0.6);
       }
-
-      // ping cortito para confirmar que el audio suena (un “pop” suave)
-      try {
-        const c = ctx();
-        const b = c.createBuffer(1, Math.max(1, c.sampleRate*0.03), c.sampleRate);
-        const s = c.createBufferSource(); s.buffer = b;
-        const g = c.createGain(); g.gain.value = 0.12;
-        s.connect(g).connect(c.destination); s.start(0);
-      } catch {}
+      // ping sutil para confirmar ruta
+      try{
+        const c=ctx(); const b=c.createBuffer(1, Math.max(1,c.sampleRate*0.03), c.sampleRate);
+        const s=c.createBufferSource(); const g=c.createGain(); g.gain.value=0.12;
+        s.buffer=b; s.connect(g).connect(ensureMaster()); s.start(0);
+      }catch{}
     })
-    .catch(e => log('Audio err: '+(e?.message||e), 'err'));
+    .catch(e=>log('Audio err: '+(e&&e.message||e),'err'));
 }
+
 function setPresence(on){
   stateEl.textContent='estado: '+(on?'presente':'ausente');
-  if(audioReady){ for(const n in LEVELS){ ramp(loops[n].gain.gain, on?LEVELS[n]:0, 0.7); } }
-  if(on){ presentStart=performance.now(); textEl.classList.add('show'); startText(); }
-  else{ stopText(); textEl.classList.remove('show'); }
+  if (on){
+    // sube master; loops suben si ya están cargados
+    ramp(ensureMaster().gain, 0.9, 0.6);
+    if (audioReady){ for(const n in LEVELS){ ramp(loops[n].gain.gain, LEVELS[n], 0.7); } }
+    presentStart=performance.now(); textEl.classList.add('show'); startText();
+  } else {
+    // baja todo
+    if (audioReady){ for(const n in LEVELS){ ramp(loops[n].gain.gain, 0.0, 0.7); } }
+    ramp(ensureMaster().gain, 0.0, 0.7);
+    stopText(); textEl.classList.remove('show');
+  }
 }
-function setMouth(o){ if(audioReady) ramp(loops['kinetic_foley_loop'].gain.gain, o?.32:0, .2); }
+function setMouth(open){ if(audioReady) ramp(loops['kinetic_foley_loop'].gain.gain, open?.32:0, .2); }
 function grain(){ const k=Object.keys(grains); if(!k.length) return; trig(grains[k[Math.floor(Math.random()*k.length)]], .85); }
-function motionMod(m){
-  if(!audioReady) return;
+function motionMod(m){ if(!audioReady) return;
   ramp(loops['texture_hiss_loop'].gain.gain, Math.min(.25,.10+m*1.0), .2);
   ramp(loops['kinetic_click_loop'].gain.gain, Math.min(.30,.14+m*1.3), .15);
 }
 
 // Texto
 const PHRASES=[
- "soy un torito bravo durante {{t}} segundos.",
- "los sueños caen del cielo.",
- "lo llevo en la sangre."
+ "has sido un torito bravo durante {{t}} segundos.",
+ "Los sueños caen del cielo.",
+ "cierro los ojos, cuando los abro, salen modelos de los cuadros."
 ];
 let textTimer=null,presentStart=0,phraseIndex=0;
 function renderPhrase(){const tSec=Math.floor((performance.now()-presentStart)/1000);
@@ -149,24 +180,25 @@ function renderPhrase(){const tSec=Math.floor((performance.now()-presentStart)/1
 function startText(){ if(textTimer) return; renderPhrase(); textTimer=setInterval(renderPhrase,9000); }
 function stopText(){ if(textTimer){ clearInterval(textTimer); textTimer=null; } }
 
-// Visual + gestos (MediaPipe)
+// Visual + gestos
 let faceMesh, present=false, lastSeen=0, seen=0, browsEMA=0, browBase=0, browFrames=0, browCal=false, browsUp=false, mouthEMA=0, mouthOpen=false, lastNose=null, motionEMA=0;
 const N=1,C=152,MT=13,MB=14,LE=159,RE=386; const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y), lerp=(a,b,t)=>a+(b-a)*t;
 function bg(t,m){
-  const w=canvas.width=stage.clientWidth*2, h=canvas.height=stage.clientHeight*2, cx=ctx2d;
+  const w=canvas.width=stage.clientWidth*2,h=canvas.height=stage.clientHeight*2,cx=ctx2d;
   const cn=(Math.sin(t*0.0006)+1)/2, M=Math.min(1,m*2);
   const hue=(210+70*cn+80*M)%360, sat=20+40*M, lit=12+22*cn+16*M;
-  const grd=cx.createRadialGradient(w*.5, h*(.36+.10*M), w*.08, w*.5, h*.60, Math.max(w,h)*.8);
-  grd.addColorStop(0, `hsla(${hue}, ${sat+18}%, ${Math.min(94,lit+28)}%, ${.18+.24*M})`);
-  grd.addColorStop(1, `hsla(${(hue+180)%360}, ${sat}%, ${Math.max(7,lit-4)}%, ${.95})`);
+  const grd=cx.createRadialGradient(w*.5,h*(.36+.10*M),w*.08,w*.5,h*.60,Math.max(w,h)*.8);
+  grd.addColorStop(0,`hsla(${hue},${sat+18}%,${Math.min(94,lit+28)}%,${.18+.24*M})`);
+  grd.addColorStop(1,`hsla(${(hue+180)%360},${sat}%,${Math.max(7,lit-4)}%,${.95})`);
   cx.fillStyle=grd; cx.fillRect(0,0,w,h);
   textEl.style.filter = `blur(${(M*1.8).toFixed(2)}px)`;
-  const dur = Math.max(1.6, 2.8 - M*1.3); textEl.style.animationDuration = `${dur.toFixed(2)}s`;
+  const dur=Math.max(1.6,2.8-M*1.3); textEl.style.animationDuration=`${dur.toFixed(2)}s`;
 }
 function onResults(r){
   const t=performance.now(), f=r&&r.multiFaceLandmarks&&r.multiFaceLandmarks[0];
   if(f){
-    seen++; lastSeen=t; const s=dist(f[N],f[C]), nose=f[N];
+    seen++; lastSeen=t;
+    const s=dist(f[N],f[C]), nose=f[N];
     if(lastNose){ const d=Math.hypot(nose.x-lastNose.x,nose.y-lastNose.y); motionEMA=motionEMA*.85+d*.15; motionMod(motionEMA); }
     lastNose={x:nose.x,y:nose.y};
     const browY=(f[10].y+f[67].y+f[297].y)/3, eyeY=(f[LE].y+f[RE].y)/2;
@@ -183,78 +215,52 @@ function onResults(r){
   metersEl.textContent=`browΔ: ${(browsEMA-browBase).toFixed(3)} · mouth: ${mouthEMA.toFixed(3)}`;
 }
 
-// —— iPhone-first START: sin await antes de pedir permisos —— 
+// iPhone-first start (sin await antes de permisos)
 function userStart(){
   if (window.__starting__) return;
   window.__starting__ = true;
-
   try{
-    // 1) gesto: crear/resumir audio inmediatamente
-    ctx(); silentClick(); actx.resume().catch(()=>{});
+    ctx(); ensureMaster(); silentClick(); actx.resume().catch(()=>{});
     log('AudioContext: '+actx.state, actx.state==='running'?'ok':'warn');
-
-    // 2) feedback visual
     cta.textContent='Pidiendo permisos de cámara…';
-    
-    // 3) pedir cámara YA (sin await previos)
     const constraints={ video:{facingMode:'user',width:{ideal:720},height:{ideal:1280}}, audio:false };
     navigator.mediaDevices.getUserMedia(constraints).then(stream=>{
       cta.textContent='Iniciando cámara…';
-      const watchdog=setTimeout(()=>{
-        ovl.style.display='flex';
-        cta.textContent='No se pudo iniciar. Toca para reintentar (revisa permisos).';
-        log('Watchdog: la cámara no inició en 6s','err');
-        window.__starting__=false;
-      },6000);
-
+      const watchdog=setTimeout(()=>{ovl.style.display='flex';cta.textContent='No se pudo iniciar. Toca para reintentar (revisa permisos).';log('Watchdog: cámara no inició','err');window.__starting__=false;},6000);
       video.setAttribute('playsinline',''); video.setAttribute('webkit-playsinline',''); video.setAttribute('autoplay',''); video.muted=true;
       video.srcObject=stream;
       return video.play().then(()=>{
-        clearTimeout(watchdog);
-        ovl.style.display='none';
-        log('Cámara OK ✅','ok');
-
-        // 4) arrancar FaceMesh
+        clearTimeout(watchdog); ovl.style.display='none'; log('Cámara OK ✅','ok');
         const fm=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`});
         fm.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:0.6,minTrackingConfidence:0.6});
         fm.onResults(onResults);
         new Camera(video,{onFrame:async()=>{await fm.send({image:video});}}).start();
-
-        // 5) cargar audio en segundo plano
+        // carga audio en segundo plano
         loadAllAudioAfterCamera();
-
         setPresence(false);
         log('Sistema listo ✅ · mira a cámara','ok');
       });
     }).catch(e=>{
       const msg=String(e&&e.message||e);
-      if(/NotAllowedError|denied|Permission/i.test(msg)){
-        log('Permiso de cámara denegado. Pulsa el candado → Cámara: Permitir.', 'err');
-      }else if(/NotFoundError|no device|overconstrained/i.test(msg)){
-        log('No se encontró cámara frontal.', 'err');
-      }else{
-        log('Error cámara: '+msg,'err');
-      }
-      ovl.style.display='flex'; cta.textContent='Toca para reintentar (revisa permisos)';
-      window.__starting__=false;
+      if(/NotAllowedError|denied|Permission/i.test(msg)){log('Permiso de cámara denegado. Candado → Cámara: Permitir.','err');}
+      else if(/NotFoundError|no device|overconstrained/i.test(msg)){log('No se encontró cámara frontal.','err');}
+      else{log('Error cámara: '+msg,'err');}
+      ovl.style.display='flex'; cta.textContent='Toca para reintentar (revisa permisos)'; window.__starting__=false;
     });
   }catch(e){
-    log('Error: '+(e?.message||e),'err');
-    ovl.style.display='flex'; cta.textContent='Toca para reintentar';
-    window.__starting__=false;
+    log('Error: '+(e&&e.message||e),'err');
+    ovl.style.display='flex'; cta.textContent='Toca para reintentar'; window.__starting__=false;
   }
 }
 
-// listeners robustos (mismo gesto en ovl, stage y body)
+// listeners
 ['pointerdown','touchstart','click'].forEach(ev=>{
-  ovl.addEventListener(ev, (e)=>{e.preventDefault(); userStart();}, {passive:false});
+  ovl.addEventListener(ev,(e)=>{e.preventDefault(); userStart();}, {passive:false});
   stage.addEventListener(ev,(e)=>{e.preventDefault(); userStart();}, {passive:false});
   document.body.addEventListener(ev,(e)=>{e.preventDefault(); userStart();}, {passive:false});
 });
 
-// primer fondo + tip
-bg(performance.now(), 0);
-log('Tip iPhone: quita Modo Privado, pulsa el candado → Permitir Cámara/Audio. 🔊','warn');
-</script>
-</body>
-</html>
+// Tester buttons
+btnTest.addEventListener('click', ()=>{
+  // sube master y, si audioReady, sube loops nominales
+  ramp(ensureMaster().gain, 
