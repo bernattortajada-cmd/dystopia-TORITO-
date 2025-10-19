@@ -4,7 +4,7 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
-<title>PRESENCIA v6.1 — iPhone audio fix + master gain + tester</title>
+<title>PRESENCIA v6.2 — iPhone audio element fallback</title>
 <style>
   :root{--bg:#0a0a0b;--fg:#e8e8ec}
   *{box-sizing:border-box}
@@ -67,7 +67,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
 <script>
-/* v6.1 audio iPhone: masterGain, post-load present ramp, tester */
+/* v6.2: fallback mediante <audio> si WebAudio decode falla (iOS-friendly) */
 const logEl=document.getElementById('log'); const stateEl=document.getElementById('state'); const metersEl=document.getElementById('meters');
 const video=document.getElementById('cam'), canvas=document.getElementById('viz'), ctx2d=canvas.getContext('2d'), ovl=document.getElementById('ovl'), cta=document.getElementById('cta'), stage=document.getElementById('stage');
 const textEl=document.getElementById('textOverlay');
@@ -78,66 +78,96 @@ let actx; function ctx(){return actx||(actx=new (window.AudioContext||window.web
 function silentClick(){const c=ctx();const o=c.createOscillator();const g=c.createGain();g.gain.value=0.0001;o.connect(g).connect(c.destination);o.start();o.stop(c.currentTime+0.05);}
 
 let masterGain;
-function ensureMaster(){
-  const c=ctx();
-  if (!masterGain){
-    masterGain=c.createGain();
-    masterGain.gain.value=0.0; // arranca mute
-    masterGain.connect(c.destination);
-  }
-  return masterGain;
-}
+function ensureMaster(){const c=ctx();if(!masterGain){masterGain=c.createGain();masterGain.gain.value=0.0;masterGain.connect(c.destination);}return masterGain;}
 
-async function loadBuffer(name){
+// ——— Loader con fallback ———————————————————
+async function tryDecode(name){
+  // intenta .wav y .mp3 con decodeAudioData
   for(const ext of ['wav','mp3']){
     try{
-      const r=await fetch(`assets/${name}.${ext}`,{cache:'no-store'});
-      if(r.ok){
-        const a=await r.arrayBuffer();
-        const b=await ctx().decodeAudioData(a);
-        log(`Cargado ${name}.${ext}`,'ok');
-        return b;
-      } else {
-        log(`No encontrado ${name}.${ext}`,'warn');
-      }
-    }catch(e){ log(`Error cargando ${name}.${ext}: ${(e&&e.message)||e}`,'warn'); }
+      const url=`assets/${name}.${ext}`;
+      const r=await fetch(url,{cache:'no-store'});
+      if(!r.ok){log(`No encontrado ${name}.${ext}`,'warn');continue;}
+      const a=await r.arrayBuffer();
+      const b=await ctx().decodeAudioData(a);
+      log(`Decodificado ${name}.${ext}`,'ok');
+      return {mode:'buffer', buffer:b, url};
+    }catch(e){
+      log(`Fallo decode ${name}: ${(e&&e.message)||e}`,'warn');
+    }
   }
-  throw new Error('No pude cargar '+name);
+  return null;
 }
 
-function makeLoop(buffer, gainStart=0){
-  const c=ctx();
-  const src=c.createBufferSource(); src.buffer=buffer; src.loop=true;
+function makeLoopFromBuffer(buffer, gainStart=0){
+  const c=ctx(); const src=c.createBufferSource(); src.buffer=buffer; src.loop=true;
+  const g=c.createGain(); g.gain.value=gainStart;
+  src.connect(g).connect(ensureMaster()); src.start();
+  return {type:'buffer', src, gain:g, media:null};
+}
+
+function makeLoopFromElement(urls, gainStart=0){
+  // crea <audio>, loop y lo conecta al contexto
+  const el=document.createElement('audio');
+  el.loop=true; el.preload='auto'; el.crossOrigin='anonymous';
+  // intenta WAV y MP3
+  for(const u of urls){ const s=document.createElement('source'); s.src=u; el.appendChild(s); }
+  const c=ctx(); const src=c.createMediaElementSource(el);
   const g=c.createGain(); g.gain.value=gainStart;
   src.connect(g).connect(ensureMaster());
-  src.start();
-  return {src, gain:g};
+  // iOS necesita play() tras gesto; lo llamaremos en userStart
+  return {type:'element', src:el, gain:g, media:el};
 }
-function ramp(param, to, t=0.4){const c=ctx();const n=c.currentTime;param.cancelScheduledValues(n);param.setValueAtTime(param.value,n);param.linearRampToValueAtTime(to,n+t);}
-function trig(buffer, vol=0.9){
+
+async function loadLoopAny(name){
+  // 1) intenta decode
+  const decoded=await tryDecode(name);
+  if(decoded && decoded.mode==='buffer'){
+    return makeLoopFromBuffer(decoded.buffer, 0);
+  }
+  // 2) fallback: <audio> element con ambas rutas posibles
+  const urls=[`assets/${name}.wav`,`assets/${name}.mp3`];
+  log(`Usando fallback <audio> para ${name}`,'warn');
+  return makeLoopFromElement(urls, 0);
+}
+
+function trigBufferOnce(buffer, vol=0.9){
   const c=ctx(); const s=c.createBufferSource(); const g=c.createGain(); g.gain.value=vol;
   s.buffer=buffer; s.connect(g).connect(ensureMaster()); s.start(0); s.stop(c.currentTime+(buffer.duration||3));
 }
+async function loadGrain(name){
+  const decoded=await tryDecode(name);
+  if(decoded && decoded.mode==='buffer'){ return decoded.buffer; }
+  log(`Grain ${name} sin buffer (no hay fallback para one-shot)`,'warn'); return null;
+}
 
+// ——— Nombres, estado y niveles ————————————————
 const LOOPS=['breath_drone_base','breath_air_noise','sub_pulse_loop','texture_hiss_loop','kinetic_click_loop','kinetic_foley_loop'];
 const GRAINS=['choir_grain_01','choir_grain_02','choir_grain_03','choir_grain_04'];
 let loops={}, grains={}, audioReady=false;
 const LEVELS={breath_drone_base:.38,breath_air_noise:.16,sub_pulse_loop:.32,texture_hiss_loop:.12,kinetic_click_loop:.20,kinetic_foley_loop:0};
 
+function ramp(param,to,t=0.4){const c=ctx();const n=c.currentTime;param.cancelScheduledValues(n);param.setValueAtTime(param.value,n);param.linearRampToValueAtTime(to,n+t);}
+
+function gainOf(loopObj){ return loopObj.gain.gain; }
+
 function loadAllAudioAfterCamera(){
-  Promise.all(LOOPS.map(n=>loadBuffer(n)))
-    .then(bufs=>{ LOOPS.forEach((n,i)=>{ loops[n]=makeLoop(bufs[i],0); }); })
-    .then(()=>Promise.all(GRAINS.map(n=>loadBuffer(n).catch(()=>null))))
+  // Loops (buffer o elemento)
+  Promise.all(LOOPS.map(n=>loadLoopAny(n)))
+    .then(outs=>{
+      LOOPS.forEach((n,i)=>{ loops[n]=outs[i]; });
+    })
+    // Granos (solo buffer)
+    .then(()=>Promise.all(GRAINS.map(n=>loadGrain(n).catch(()=>null))))
     .then(gbufs=>{
       GRAINS.forEach((n,i)=>{ if(gbufs[i]) grains[n]=gbufs[i]; });
       audioReady=true; log('Audio listo ✅','ok');
-
-      // si ya estás presente cuando termina de cargar → sube niveles y master
-      if (present){
-        for (const n in LEVELS){ ramp(loops[n].gain.gain, LEVELS[n], 0.6); }
+      // Si ya presente, subir niveles y master
+      if(present){
+        for(const n in LEVELS){ ramp(gainOf(loops[n]), LEVELS[n], 0.6); }
         ramp(ensureMaster().gain, 0.9, 0.6);
       }
-      // ping sutil para confirmar ruta
+      // ping suave
       try{
         const c=ctx(); const b=c.createBuffer(1, Math.max(1,c.sampleRate*0.03), c.sampleRate);
         const s=c.createBufferSource(); const g=c.createGain(); g.gain.value=0.12;
@@ -147,28 +177,31 @@ function loadAllAudioAfterCamera(){
     .catch(e=>log('Audio err: '+(e&&e.message||e),'err'));
 }
 
+// ——— Control de presencia / gestos ————————————————
 function setPresence(on){
   stateEl.textContent='estado: '+(on?'presente':'ausente');
-  if (on){
-    // sube master; loops suben si ya están cargados
+  if(on){
     ramp(ensureMaster().gain, 0.9, 0.6);
-    if (audioReady){ for(const n in LEVELS){ ramp(loops[n].gain.gain, LEVELS[n], 0.7); } }
+    if(audioReady){ for(const n in LEVELS){ ramp(gainOf(loops[n]), LEVELS[n], 0.7); } }
     presentStart=performance.now(); textEl.classList.add('show'); startText();
-  } else {
-    // baja todo
-    if (audioReady){ for(const n in LEVELS){ ramp(loops[n].gain.gain, 0.0, 0.7); } }
+  }else{
+    if(audioReady){ for(const n in LEVELS){ ramp(gainOf(loops[n]), 0.0, 0.7); } }
     ramp(ensureMaster().gain, 0.0, 0.7);
     stopText(); textEl.classList.remove('show');
   }
 }
-function setMouth(open){ if(audioReady) ramp(loops['kinetic_foley_loop'].gain.gain, open?.32:0, .2); }
-function grain(){ const k=Object.keys(grains); if(!k.length) return; trig(grains[k[Math.floor(Math.random()*k.length)]], .85); }
-function motionMod(m){ if(!audioReady) return;
-  ramp(loops['texture_hiss_loop'].gain.gain, Math.min(.25,.10+m*1.0), .2);
-  ramp(loops['kinetic_click_loop'].gain.gain, Math.min(.30,.14+m*1.3), .15);
+function setMouth(open){ if(audioReady) ramp(gainOf(loops['kinetic_foley_loop']), open?.32:0, .2); }
+function grain(){
+  const keys=Object.keys(grains); if(!keys.length) return;
+  trigBufferOnce(grains[keys[Math.floor(Math.random()*keys.length)]], .85);
+}
+function motionMod(m){
+  if(!audioReady) return;
+  ramp(gainOf(loops['texture_hiss_loop']), Math.min(.25,.10+m*1.0), .2);
+  ramp(gainOf(loops['kinetic_click_loop']), Math.min(.30,.14+m*1.3), .15);
 }
 
-// Texto
+// ——— Texto ——————————
 const PHRASES=[
  "has sido un torito bravo durante {{t}} segundos.",
  "Los sueños caen del cielo.",
@@ -180,7 +213,7 @@ function renderPhrase(){const tSec=Math.floor((performance.now()-presentStart)/1
 function startText(){ if(textTimer) return; renderPhrase(); textTimer=setInterval(renderPhrase,9000); }
 function stopText(){ if(textTimer){ clearInterval(textTimer); textTimer=null; } }
 
-// Visual + gestos
+// ——— Visual + gestos ——————————
 let faceMesh, present=false, lastSeen=0, seen=0, browsEMA=0, browBase=0, browFrames=0, browCal=false, browsUp=false, mouthEMA=0, mouthOpen=false, lastNose=null, motionEMA=0;
 const N=1,C=152,MT=13,MB=14,LE=159,RE=386; const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y), lerp=(a,b,t)=>a+(b-a)*t;
 function bg(t,m){
@@ -215,7 +248,7 @@ function onResults(r){
   metersEl.textContent=`browΔ: ${(browsEMA-browBase).toFixed(3)} · mouth: ${mouthEMA.toFixed(3)}`;
 }
 
-// iPhone-first start (sin await antes de permisos)
+// ——— Arranque iPhone-first ——————————
 function userStart(){
   if (window.__starting__) return;
   window.__starting__ = true;
@@ -237,6 +270,18 @@ function userStart(){
         new Camera(video,{onFrame:async()=>{await fm.send({image:video});}}).start();
         // carga audio en segundo plano
         loadAllAudioAfterCamera();
+
+        // si hay loops con <audio>, intenta darles play() explícito tras el gesto
+        setTimeout(()=>{
+          for(const n of Object.keys(loops)){
+            const L=loops[n];
+            if(L && L.type==='element' && L.media && typeof L.media.play==='function'){
+              L.media.muted=false; // por si acaso
+              L.media.play().catch(()=>{ /* iOS puede pedir otro gesto; el botón tester ayuda */});
+            }
+          }
+        }, 300);
+
         setPresence(false);
         log('Sistema listo ✅ · mira a cámara','ok');
       });
@@ -262,5 +307,28 @@ function userStart(){
 
 // Tester buttons
 btnTest.addEventListener('click', ()=>{
-  // sube master y, si audioReady, sube loops nominales
-  ramp(ensureMaster().gain, 
+  ramp(ensureMaster().gain, 0.9, 0.2);
+  if(audioReady){ for(const n in LEVELS){ ramp(gainOf(loops[n]), LEVELS[n], 0.2); } }
+  else log('Audios aún cargando…','warn');
+
+  // Si hay <audio> elements, intenta play() explícito
+  for(const n in loops){
+    const L=loops[n]; if(L && L.type==='element' && L.media && L.media.paused){
+      L.media.muted=false; L.media.play().catch(()=>{});
+    }
+  }
+});
+btnMute.addEventListener('click', ()=>{
+  if(audioReady){ for(const n in LEVELS){ ramp(gainOf(loops[n]), 0.0, 0.2); } }
+  ramp(ensureMaster().gain, 0.0, 0.2);
+});
+btnReload.addEventListener('click', ()=>{
+  audioReady=false; loops={}; grains={}; loadAllAudioAfterCamera();
+});
+
+// Fondo inicial + tip
+bg(performance.now(), 0);
+log('Tip iPhone: quita Modo Silencio y permite Cámara/Audio 🔊','warn');
+</script>
+</body>
+</html>
