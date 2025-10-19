@@ -152,35 +152,38 @@ function ramp(param,to,t=0.4){const c=ctx();const n=c.currentTime;param.cancelSc
 function gainOf(loopObj){ return loopObj.gain.gain; }
 
 function loadAllAudioAfterCamera(){
-  // Loops (buffer o elemento)
-  Promise.all(LOOPS.map(n=>loadLoopAny(n)))
-    .then(outs=>{
-      LOOPS.forEach((n,i)=>{ loops[n]=outs[i]; });
+  Promise.all(LOOPS.map(n => loadLoopAny(n)))
+    .then(outs => {
+      LOOPS.forEach((n,i) => { loops[n] = outs[i]; });
+      // 👇 NUEVO: intenta reproducir los <audio> en cuanto existan
+      ensurePlayElements();
     })
-    // Granos (solo buffer)
-    .then(()=>Promise.all(GRAINS.map(n=>loadGrain(n).catch(()=>null))))
-    .then(gbufs=>{
-      GRAINS.forEach((n,i)=>{ if(gbufs[i]) grains[n]=gbufs[i]; });
-      audioReady=true; log('Audio listo ✅','ok');
-      // Si ya presente, subir niveles y master
-      if(present){
-        for(const n in LEVELS){ ramp(gainOf(loops[n]), LEVELS[n], 0.6); }
+    .then(() => Promise.all(GRAINS.map(n => loadGrain(n).catch(()=>null))))
+    .then(gbufs => {
+      GRAINS.forEach((n,i) => { if (gbufs[i]) grains[n] = gbufs[i]; });
+      audioReady = true;
+      log('Audio listo ✅','ok');
+
+      // si ya estás presente al terminar de cargar → sube niveles + master y asegúrate de play()
+      if (present) {
+        ensurePlayElements();
+        for (const n in LEVELS) { ramp(gainOf(loops[n]), LEVELS[n], 0.6); }
         ramp(ensureMaster().gain, 0.9, 0.6);
       }
-      // ping suave
-      try{
-        const c=ctx(); const b=c.createBuffer(1, Math.max(1,c.sampleRate*0.03), c.sampleRate);
-        const s=c.createBufferSource(); const g=c.createGain(); g.gain.value=0.12;
-        s.buffer=b; s.connect(g).connect(ensureMaster()); s.start(0);
-      }catch{}
-    })
-    .catch(e=>log('Audio err: '+(e&&e.message||e),'err'));
-}
 
+      // ping suave para confirmar ruta
+      try {
+        const c = ctx(); const b = c.createBuffer(1, Math.max(1,c.sampleRate*0.03), c.sampleRate);
+        const s = c.createBufferSource(); const g = c.createGain(); g.gain.value = 0.12;
+        s.buffer = b; s.connect(g).connect(ensureMaster()); s.start(0);
+      } catch {}
+    })
+    .catch(e => log('Audio err: '+(e && e.message || e), 'err'));
+}
 // ——— Control de presencia / gestos ————————————————
 function setPresence(on){
   stateEl.textContent='estado: '+(on?'presente':'ausente');
-  if(on){
+  if (on) { ensurePlayElements(); }
     ramp(ensureMaster().gain, 0.9, 0.6);
     if(audioReady){ for(const n in LEVELS){ ramp(gainOf(loops[n]), LEVELS[n], 0.7); } }
     presentStart=performance.now(); textEl.classList.add('show'); startText();
@@ -226,6 +229,29 @@ function bg(t,m){
   cx.fillStyle=grd; cx.fillRect(0,0,w,h);
   textEl.style.filter = `blur(${(M*1.8).toFixed(2)}px)`;
   const dur=Math.max(1.6,2.8-M*1.3); textEl.style.animationDuration=`${dur.toFixed(2)}s`;
+  function ensurePlayElements(){
+  // Intenta poner en marcha cualquier loop basado en <audio>
+  for (const n of Object.keys(loops)){
+    const L = loops[n];
+    if (L && L.type === 'element' && L.media) {
+      // si ya puede reproducirse, dale play
+      if (L.media.readyState >= 2) {
+        L.media.muted = false;
+        L.media.loop = true;
+        L.media.play().catch(()=>{});
+      } else {
+        // cuando esté listo, intenta play
+        L.media.addEventListener('canplay', ()=>{
+          L.media.muted = false;
+          L.media.loop = true;
+          L.media.play().catch(()=>{});
+        }, { once:true });
+        // fuerza carga
+        try { L.media.load(); } catch {}
+      }
+    }
+  }
+}
 }
 function onResults(r){
   const t=performance.now(), f=r&&r.multiFaceLandmarks&&r.multiFaceLandmarks[0];
